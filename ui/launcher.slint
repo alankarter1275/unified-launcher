@@ -1,0 +1,477 @@
+export struct AppItem {
+    text: string,
+    has_native_icon: bool,
+    native_icon: image,
+    text_icon: string,
+}
+
+export component LauncherWindow inherits Window {
+    width: 640px;
+    height: 420px;
+    background: transparent; 
+    no-frame: true;
+    always-on-top: true;
+
+    in-out property <string> current_view: "main";
+    in-out property <string> search_text <=> search_input.text;
+    
+    in property <[AppItem]> display_items: [];
+    property <int> absolute_index: 0;
+    
+    in property <bool> is_split_view: false;
+    in property <bool> is_two_column: false;
+    in property <string> ribbon_text: "Apps"; 
+    in property <image> preview_image;
+
+    in-out property <int> grid_index: 0;
+    in-out property <bool> in_grid: true; 
+
+    property <length> item_height: 44px;
+    property <string> icon_font: "JetBrainsMono Nerd Font Propo"; 
+
+    callback text_changed(string);
+    callback execute_selected(string, bool, bool); 
+    callback item_highlighted(int, int, string);
+    callback sidebar_action(int);
+    
+    public function focus_search() { search_input.focus(); }
+    init => { root.focus_search(); }
+
+    public function set_and_trigger_search(query: string) {
+        search_input.text = query;
+        root.text_changed(query);
+    }
+
+    public function adjust_scroll() {
+        let item_top = root.absolute_index * root.item_height;
+        let item_bottom = item_top + root.item_height;
+        let view_top = -list_flickable.viewport-y;
+        let view_bottom = view_top + list_flickable.height;
+        
+        if (item_top < view_top) { 
+            list_flickable.viewport-y = -item_top; 
+        } else if (item_bottom > view_bottom) { 
+            list_flickable.viewport-y = -(item_bottom - list_flickable.height);
+        }
+        
+        if (root.display_items.length > 0) {
+            root.item_highlighted(root.absolute_index, root.display_items.length, root.display_items[root.absolute_index].text);
+        }
+    }
+
+    changed display_items => { root.absolute_index = 0; list_flickable.viewport-y = 0; root.adjust_scroll(); }
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) { return accept; }
+            if (event.text == Key.Return) {
+                if (root.display_items.length > 0) {
+                    root.execute_selected(root.display_items[root.absolute_index].text, false, event.modifiers.shift);
+                }
+                return accept;
+            }
+            if (event.text == Key.UpArrow) {
+                if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); }
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); }
+                return accept;
+            }
+            return reject;
+        }
+
+        Rectangle {
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: #3e4451; 
+            background: #181a1f; 
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 1px; 
+                padding-top: 1px;
+                padding-bottom: 1px;
+                spacing: 16px; 
+
+                VerticalLayout {
+                    width: 54px; 
+                    alignment: center; 
+                    padding-top: 12px;
+                    padding-bottom: 12px;
+
+                    VerticalLayout {
+                        spacing: 12px;
+                        
+                        Rectangle { 
+                            width: 54px; height: 54px; 
+                            Rectangle {
+                                width: ta1.pressed ? 44px : 54px; height: ta1.pressed ? 44px : 54px;
+                                border-radius: self.width / 2;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                background: ta1.has-hover ? #2c323c : transparent;
+                                animate width, height { duration: 150ms; easing: ease-in-out; }
+                            }
+                            Text { 
+                                width: 100%; height: 100%; text: "󰈹"; color: #abb2bf; font-family: root.icon_font; 
+                                font-size: ta1.pressed ? 18px : 24px; horizontal-alignment: center; vertical-alignment: center; 
+                                animate font-size { duration: 150ms; easing: ease-in-out; }
+                            } 
+                            ta1 := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; clicked => { root.sidebar_action(1); } }
+                        } 
+
+                        Rectangle { 
+                            width: 54px; height: 54px; 
+                            Rectangle {
+                                width: ta2.pressed ? 44px : 54px; height: ta2.pressed ? 44px : 54px;
+                                border-radius: self.width / 2;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                background: ta2.has-hover ? #2c323c : transparent;
+                                animate width, height { duration: 150ms; easing: ease-in-out; }
+                            }
+                            Text { 
+                                width: 100%; height: 100%; text: ""; color: #abb2bf; font-family: root.icon_font; 
+                                font-size: ta2.pressed ? 18px : 24px; horizontal-alignment: center; vertical-alignment: center; 
+                                animate font-size { duration: 150ms; easing: ease-in-out; }
+                            } 
+                            ta2 := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; clicked => { root.sidebar_action(2); } }
+                        } 
+
+                        Rectangle { 
+                            width: 54px; height: 54px; 
+                            Rectangle {
+                                width: ta3.pressed ? 44px : 54px; height: ta3.pressed ? 44px : 54px;
+                                border-radius: self.width / 2;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                background: ta3.has-hover ? #2c323c : transparent;
+                                animate width, height { duration: 150ms; easing: ease-in-out; }
+                            }
+                            Text { 
+                                width: 100%; height: 100%; text: "󰟒"; color: #abb2bf; font-family: root.icon_font; 
+                                font-size: ta3.pressed ? 18px : 24px; horizontal-alignment: center; vertical-alignment: center; 
+                                animate font-size { duration: 150ms; easing: ease-in-out; }
+                            } 
+                            ta3 := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; clicked => { root.sidebar_action(3); } }
+                        } 
+
+                        Rectangle { 
+                            width: 54px; height: 54px; 
+                            Rectangle {
+                                width: ta4.pressed ? 44px : 54px; height: ta4.pressed ? 44px : 54px;
+                                border-radius: self.width / 2;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                background: ta4.has-hover ? #2c323c : transparent;
+                                animate width, height { duration: 150ms; easing: ease-in-out; }
+                            }
+                            Text { 
+                                width: 100%; height: 100%; text: ""; color: #abb2bf; font-family: root.icon_font; 
+                                font-size: ta4.pressed ? 18px : 24px; horizontal-alignment: center; vertical-alignment: center; 
+                                animate font-size { duration: 150ms; easing: ease-in-out; }
+                            } 
+                            ta4 := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; clicked => { root.sidebar_action(4); } }
+                        } 
+
+                        Rectangle { 
+                            width: 54px; height: 54px; 
+                            Rectangle {
+                                width: ta5.pressed ? 44px : 54px; height: ta5.pressed ? 44px : 54px;
+                                border-radius: self.width / 2;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                background: ta5.has-hover ? #2c323c : transparent;
+                                animate width, height { duration: 150ms; easing: ease-in-out; }
+                            }
+                            Text { 
+                                width: 100%; height: 100%; text: ""; color: #abb2bf; font-family: root.icon_font; 
+                                font-size: ta5.pressed ? 18px : 24px; horizontal-alignment: center; vertical-alignment: center; 
+                                animate font-size { duration: 150ms; easing: ease-in-out; }
+                            } 
+                            ta5 := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; clicked => { root.sidebar_action(5); } }
+                        } 
+                        
+                        Rectangle { 
+                            width: 54px; height: 54px; 
+                            Rectangle {
+                                width: ta_power.pressed ? 44px : 54px; height: ta_power.pressed ? 44px : 54px;
+                                border-radius: self.width / 2;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                background: ta_power.has-hover ? #2c323c : transparent;
+                                animate width, height { duration: 150ms; easing: ease-in-out; }
+                            }
+                            Text { 
+                                width: 100%; height: 100%; text: "⏻"; color: #e06c75; font-family: root.icon_font; 
+                                font-size: ta_power.pressed ? 18px : 24px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center;
+                                animate font-size { duration: 150ms; easing: ease-in-out; }
+                            } 
+                            ta_power := TouchArea {
+                                width: 100%; height: 100%; mouse-cursor: pointer;
+                                clicked => { root.current_view = root.current_view == "power" ? "main" : "power"; }
+                            }
+                        } 
+                    }
+                }
+
+                Rectangle {
+                    horizontal-stretch: 1;
+                    background: #21252b; 
+                    border-top-left-radius: 16px;
+                    border-bottom-left-radius: 16px;
+                    border-top-right-radius: 15px; 
+                    border-bottom-right-radius: 15px;
+                    clip: true;
+
+                    VerticalLayout {
+                        visible: root.current_view != "power";
+                        padding: 12px; 
+                        spacing: 12px;
+                        
+                        HorizontalLayout {
+                            height: 40px;
+                            spacing: 12px;
+                            
+                            Text {
+                                text: "";
+                                color: #61afef;
+                                font-family: root.icon_font;
+                                font-size: 18px;
+                                vertical-alignment: center;
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                Text { 
+                                    width: 100%; height: 100%;
+                                    vertical-alignment: center; 
+                                    horizontal-alignment: left;
+                                    font-size: 18px; color: #5c6370;
+                                    text: search_input.text == "" ? "Search apps, /paths, @modules..." : "";
+                                }
+                                search_input := TextInput {
+                                    width: 100%; height: 100%;
+                                    vertical-alignment: center; 
+                                    horizontal-alignment: left;
+                                    font-size: 18px; color: #abb2bf; single-line: true;
+                                    edited => { root.text_changed(self.text); }
+                                    
+                                    key-pressed(event) => {
+                                        if (event.text == "1" && event.modifiers.alt) { root.sidebar_action(1); return accept; }
+                                        if (event.text == "2" && event.modifiers.alt) { root.sidebar_action(2); return accept; }
+                                        if (event.text == "3" && event.modifiers.alt) { root.sidebar_action(3); return accept; }
+                                        if (event.text == "4" && event.modifiers.alt) { root.sidebar_action(4); return accept; }
+                                        if (event.text == "5" && event.modifiers.alt) { root.sidebar_action(5); return accept; }
+                                        
+                                        if (event.text == Key.DownArrow) {
+                                            if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.UpArrow) {
+                                            if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.Return) {
+                                            if (root.display_items.length > 0) {
+                                                root.execute_selected(root.display_items[root.absolute_index].text, false, event.modifiers.shift);
+                                            }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.Escape) { return accept; }
+                                        return reject;
+                                    }
+                                }
+                            }
+
+                            Text { 
+                                vertical-alignment: center; 
+                                color: #5c6370; 
+                                font-size: 13px; 
+                                font-weight: 600; 
+                                text: root.ribbon_text; 
+                            }
+                        }
+
+                        HorizontalLayout {
+                            vertical-stretch: 1; 
+                            spacing: 12px;
+                            
+                            list_container := Rectangle {
+                                horizontal-stretch: root.is_split_view ? 45 : 100; 
+                                clip: true; border-radius: 12px; background: root.is_split_view ? #181a1f : transparent;
+                                
+                                list_flickable := Flickable {
+                                    width: 100%; height: 100%; 
+                                    interactive: true;
+                                    viewport-height: inner_layout.preferred-height;
+
+                                    inner_layout := VerticalLayout {
+                                        width: list_container.width;
+                                        alignment: start;
+                                        
+                                        for item[index] in root.display_items: Rectangle {
+                                            height: root.item_height; width: list_container.width;
+
+                                            Rectangle {
+                                                y: 2px; height: 40px; width: parent.width; 
+                                                border-radius: 8px; 
+                                                
+                                                background: index == root.absolute_index || item_ta.has-hover ? #2c323c : transparent;
+                                                
+                                                Rectangle {
+                                                    x: 6px; y: 12px; width: 4px; height: 16px; border-radius: 2px;
+                                                    background: index == root.absolute_index ? #61afef : transparent;
+                                                }
+
+                                                HorizontalLayout {
+                                                    padding-left: 18px;
+                                                    spacing: 16px;
+                                                    
+                                                    Rectangle {
+                                                        width: 24px; height: 40px;
+                                                        
+                                                        if item.has_native_icon: Image {
+                                                            source: item.native_icon;
+                                                            width: 24px; height: 24px; y: 8px; image-fit: contain;
+                                                        }
+                                                        if !item.has_native_icon: Text {
+                                                            text: item.text_icon; font-family: root.icon_font;
+                                                            color: index == root.absolute_index ? #61afef : #abb2bf; 
+                                                            font-size: 20px; width: 100%; height: 100%;
+                                                            horizontal-alignment: center; vertical-alignment: center;
+                                                        }
+                                                    }
+                                                    
+                                                    Text { 
+                                                        text: item.text; 
+                                                        color: index == root.absolute_index ? #ffffff : #abb2bf; 
+                                                        font-size: 15px; font-weight: 600; height: 40px;
+                                                        vertical-alignment: center; overflow: elide;
+                                                    }
+                                                }
+
+                                                item_ta := TouchArea {
+                                                    width: 100%; height: 100%;
+                                                    mouse-cursor: pointer;
+                                                    clicked => {
+                                                        root.absolute_index = index;
+                                                        root.execute_selected(item.text, false, false);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+              
+                            Rectangle {
+                                visible: root.is_split_view;
+                                horizontal-stretch: root.is_split_view ? 55 : 0; background: #181a1f; border-radius: 12px; clip: true;
+                                Image { width: 100%; height: 100%; source: root.preview_image; image-fit: contain; }
+                            }
+                        }
+                    }
+
+                    // THE NEW FIX: Elevated bouncy power menu buttons
+                    GridLayout {
+                        visible: root.current_view == "power";
+                        padding: 24px;
+                        spacing: 24px;
+                        vertical-stretch: 1; 
+
+                        Row {
+                            Rectangle { 
+                                background: transparent;
+                                Rectangle {
+                                    width: ta_lock.pressed ? parent.width - 20px : parent.width;
+                                    height: ta_lock.pressed ? parent.height - 20px : parent.height;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                    border-radius: 24px; background: #3e4451;
+                                    
+                                    drop-shadow-color: #00000066; 
+                                    drop-shadow-blur: ta_lock.pressed ? 4px : 16px; 
+                                    drop-shadow-offset-y: ta_lock.pressed ? 2px : 8px;
+                                    
+                                    animate width, height, drop-shadow-blur, drop-shadow-offset-y { duration: 150ms; easing: ease-in-out; }
+                                    
+                                    VerticalLayout { 
+                                        alignment: center; spacing: 12px; 
+                                        Text { text: "󰌾"; color: #e5c07b; font-family: root.icon_font; font-size: ta_lock.pressed ? 34px : 40px; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                        Text { text: "Lock"; color: #abb2bf; font-size: ta_lock.pressed ? 12px : 14px; font-weight: 600; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                    } 
+                                }
+                                ta_lock := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; }
+                            }
+                            
+                            Rectangle { 
+                                background: transparent;
+                                Rectangle {
+                                    width: ta_shutdown.pressed ? parent.width - 20px : parent.width;
+                                    height: ta_shutdown.pressed ? parent.height - 20px : parent.height;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                    border-radius: 24px; background: #4b2a2e;
+                                    
+                                    drop-shadow-color: #00000066; 
+                                    drop-shadow-blur: ta_shutdown.pressed ? 4px : 16px; 
+                                    drop-shadow-offset-y: ta_shutdown.pressed ? 2px : 8px;
+                                    
+                                    animate width, height, drop-shadow-blur, drop-shadow-offset-y { duration: 150ms; easing: ease-in-out; }
+                                    
+                                    VerticalLayout { 
+                                        alignment: center; spacing: 12px; 
+                                        Text { text: "󰐥"; color: #e06c75; font-family: root.icon_font; font-size: ta_shutdown.pressed ? 34px : 40px; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                        Text { text: "Shutdown"; color: #abb2bf; font-size: ta_shutdown.pressed ? 12px : 14px; font-weight: 600; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                    } 
+                                }
+                                ta_shutdown := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; }
+                            }
+                        }
+                        Row {
+                            Rectangle { 
+                                background: transparent;
+                                Rectangle {
+                                    width: ta_logout.pressed ? parent.width - 20px : parent.width;
+                                    height: ta_logout.pressed ? parent.height - 20px : parent.height;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                    border-radius: 24px; background: #2c323c;
+                                    
+                                    drop-shadow-color: #00000066; 
+                                    drop-shadow-blur: ta_logout.pressed ? 4px : 16px; 
+                                    drop-shadow-offset-y: ta_logout.pressed ? 2px : 8px;
+                                    
+                                    animate width, height, drop-shadow-blur, drop-shadow-offset-y { duration: 150ms; easing: ease-in-out; }
+                                    
+                                    VerticalLayout { 
+                                        alignment: center; spacing: 12px; 
+                                        Text { text: "󰍃"; color: #56b6c2; font-family: root.icon_font; font-size: ta_logout.pressed ? 34px : 40px; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                        Text { text: "Logout"; color: #abb2bf; font-size: ta_logout.pressed ? 12px : 14px; font-weight: 600; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                    } 
+                                }
+                                ta_logout := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; }
+                            }
+
+                            Rectangle { 
+                                background: transparent;
+                                Rectangle {
+                                    width: ta_reboot.pressed ? parent.width - 20px : parent.width;
+                                    height: ta_reboot.pressed ? parent.height - 20px : parent.height;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                    border-radius: 24px; background: #3e4451;
+                                    
+                                    drop-shadow-color: #00000066; 
+                                    drop-shadow-blur: ta_reboot.pressed ? 4px : 16px; 
+                                    drop-shadow-offset-y: ta_reboot.pressed ? 2px : 8px;
+                                    
+                                    animate width, height, drop-shadow-blur, drop-shadow-offset-y { duration: 150ms; easing: ease-in-out; }
+                                    
+                                    VerticalLayout { 
+                                        alignment: center; spacing: 12px; 
+                                        Text { text: "󰜉"; color: #98c379; font-family: root.icon_font; font-size: ta_reboot.pressed ? 34px : 40px; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                        Text { text: "Reboot"; color: #abb2bf; font-size: ta_reboot.pressed ? 12px : 14px; font-weight: 600; horizontal-alignment: center; animate font-size { duration: 150ms; easing: ease-in-out; } } 
+                                    } 
+                                }
+                                ta_reboot := TouchArea { width: 100%; height: 100%; mouse-cursor: pointer; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

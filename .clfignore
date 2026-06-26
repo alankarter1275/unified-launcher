@@ -1,0 +1,15 @@
+# Ignore cargo compilation artifacts
+target/
+**/*.rs.bk
+
+# Ignore standard heavy directories
+node_modules/
+.git/
+dist/
+build/
+
+# Ignore media caches
+.cache/wayland-widget-covers/
+*.png
+*.jpg
+*.mp3
