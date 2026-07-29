@@ -1,0 +1,61 @@
+export component PolkitWindow inherits Window {
+    width: 500px;
+    height: 300px;
+    background: transparent;
+    no-frame: true;
+    always-on-top: true;
+
+    in property <string> polkit_message: "Authentication Required";
+    in-out property <string> polkit_password <=> polkit_input.text;
+    property <string> icon_font: "JetBrainsMono Nerd Font Propo";
+
+    callback action_submit(string);
+    callback action_cancel();
+
+    public function focus_input() { polkit_input.focus(); }
+    init => { root.focus_input(); }
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) { root.action_cancel(); return accept; }
+            if (event.text == Key.Return) { root.action_submit(root.polkit_password); return accept; }
+            return reject;
+        }
+
+        Rectangle {
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: #3e4451;
+            background: #181a1f;
+
+            VerticalLayout {
+                padding: 32px;
+                alignment: center;
+                spacing: 16px;
+
+                Text {
+                    text: "󰌾"; color: #e5c07b; font-family: root.icon_font; font-size: 56px; horizontal-alignment: center;
+                }
+
+                Text {
+                    text: "Authentication Required"; color: #ffffff; font-size: 20px; font-weight: 700; horizontal-alignment: center;
+                }
+
+                Text {
+                    text: root.polkit_message; color: #abb2bf; font-size: 14px; horizontal-alignment: center; wrap: word-wrap;
+                }
+
+                Rectangle {
+                    height: 48px; background: #21252b; border-radius: 8px; border-width: 1px;
+                    border-color: polkit_input.has-focus ? #61afef : #3e4451;
+
+                    polkit_input := TextInput {
+                        width: 100%; height: 100%; vertical-alignment: center; horizontal-alignment: center;
+                        font-size: 20px; color: #ffffff; single-line: true; input-type: password;
+                        accepted => { root.action_submit(self.text); }
+                    }
+                }
+            }
+        }
+    }
+}

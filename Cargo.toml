@@ -4,19 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-slint = "1.5.0"
-tokio = { version = "1.37", features = [
-  "rt-multi-thread",
-  "net",
-  "macros",
-  "io-util",
-  "fs",
-  "sync",
-] }
+slint = "1.8.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
 fuzzy-matcher = "0.3.7"
-image = "0.24.7"
+zbus = { version = "3.14", features = ["tokio"] }
+futures-util = "0.3"
 
 [[bin]]
 name = "daemon"
@@ -26,8 +20,12 @@ path = "src/bin/daemon.rs"
 name = "client"
 path = "src/bin/client.rs"
 
+[[bin]]
+name = "polkit-client"
+path = "src/bin/polkit_client.rs"
+
 [build-dependencies]
-slint-build = "1.5.0"
+slint-build = "1.8.0"
 
 [profile.release]
 opt-level = "z"
