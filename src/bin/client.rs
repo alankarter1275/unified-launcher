@@ -1,32 +1,87 @@
-use slint::{ModelRc, VecModel, SharedString, Image};
-use serde::Deserialize;
-use std::os::unix::net::UnixStream;
-use std::io::{BufRead, BufReader, Write};
-use std::rc::Rc;
-use std::sync::Arc;
-use std::sync::mpsc;
-use std::thread;
 use std::env;
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
-use fuzzy_matcher::FuzzyMatcher;
+use std::rc::Rc;
+use std::sync::mpsc;
+use std::sync::Arc;
+use std::thread;
+use std::time::Duration;
+
 use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
+use serde::Deserialize;
+use slint::{Image, Model, ModelRc, SharedString, VecModel};
+
+use unified_launcher::types::socket_path;
 
 slint::include_modules!();
 
 #[derive(Deserialize)]
-struct AppInit { name: String, icon: Option<String> }
+struct AppInit {
+    name: String,
+    icon: Option<String>,
+}
 #[derive(Deserialize)]
-struct InitPayload { apps: Vec<AppInit> }
+struct InitPayload {
+    apps: Vec<AppInit>,
+}
+
+/// Try to spawn the daemon if it's not running.
+/// Looks for the daemon binary next to the client binary.
+fn ensure_daemon_running(sock_path: &str) -> bool {
+    if Path::new(sock_path).exists() {
+        return true;
+    }
+
+    // Find the daemon binary — same directory as the client binary
+    let daemon_path = if let Ok(exe) = env::current_exe() {
+        let mut d = exe.clone();
+        d.pop();
+        d.push("daemon");
+        d
+    } else {
+        eprintln!("[Client] Could not determine executable path.");
+        return false;
+    };
+
+    eprintln!("[Client] Daemon not running. Starting it...");
+
+    match std::process::Command::new(&daemon_path).spawn() {
+        Ok(child) => {
+            // Give the daemon a moment to start listening
+            for _ in 0..20 {
+                if Path::new(sock_path).exists() {
+                    return true;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+            // Timed out, but the daemon might still be initializing
+            eprintln!("[Client] Daemon started (pid {}), waiting...", child.id());
+            thread::sleep(Duration::from_millis(500));
+            Path::new(sock_path).exists()
+        }
+        Err(e) => {
+            eprintln!("[Client] Could not start daemon: {}", e);
+            false
+        }
+    }
+}
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let sock_path = socket_path();
+
+    // ---- Session restore: auto-start daemon if needed ----
+    if !ensure_daemon_running(&sock_path) {
+        eprintln!("[Client] Daemon failed to start. Is it installed in ~/.cargo/bin/ or next to the client binary?");
+        std::process::exit(1);
+    }
+
     let ui = LauncherWindow::new()?;
     let matcher = Arc::new(SkimMatcherV2::default());
 
-    let socket_path = env::var("UNIFIED_LAUNCHER_SOCKET")
-        .unwrap_or_else(|_| "/tmp/unified_launcher.sock".to_string());
-
-    let stream = UnixStream::connect(&socket_path)
-        .unwrap_or_else(|_| panic!("Daemon is not running! Start 'unified-launcher daemon' first. (socket: {})", socket_path));
+    let mut stream = UnixStream::connect(&sock_path)
+        .unwrap_or_else(|_| panic!("[Client] Could not connect to daemon at {}", sock_path));
 
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut init_line = String::new();
@@ -74,7 +129,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let query_str = query.as_str();
 
         if query_str.trim().is_empty() {
-            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps_search).clone()))));
+            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(
+                (*apps_search).clone(),
+            ))));
             ui.set_absolute_index(0);
             ui.invoke_adjust_scroll();
             ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps_search.len())));
@@ -87,7 +144,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             scored_apps.sort_by(|a, b| b.0.cmp(&a.0));
             let total_count = scored_apps.len();
-            let final_list: Vec<AppItem> = scored_apps.into_iter().take(100).map(|(_, v)| v).collect();
+            let final_list: Vec<AppItem> =
+                scored_apps.into_iter().take(100).map(|(_, v)| v).collect();
 
             ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(final_list))));
             ui.set_absolute_index(0);
@@ -109,6 +167,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     });
 
+    // Clear search button handler
+    let ui_clear = ui.as_weak();
+    ui.on_clear_search(move || {
+        let ui = ui_clear.unwrap();
+        ui.set_search_text("".into());
+        // The text_changed callback will fire from edited signal
+    });
+
     let ui_handle_high = ui.as_weak();
     ui.on_item_highlighted(move |_idx, total, _name| {
         let ui = ui_handle_high.unwrap();
@@ -122,16 +188,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     ui.on_sidebar_action(move |index| {
         match index {
-            1 => { let _ = std::process::Command::new("zen-browser").spawn(); }
-            2 => { let _ = std::process::Command::new("sh")
-                        .args(["-c", "mpv --player-operation-mode=pseudo-gui"]).spawn(); }
-            3 => { let _ = std::process::Command::new("footclient")
-                        .current_dir(&env::var("HOME").unwrap_or_default())
-                        .args(["-e", "yazi"]).spawn(); }
-            4 => { let _ = std::process::Command::new("footclient")
-                        .args(["-e", "btop"]).spawn(); }
-            5 => { let _ = std::process::Command::new("footclient")
-                        .args(["-e", "nvim"]).spawn(); }
+            1 => {
+                let _ = std::process::Command::new("zen-browser").spawn();
+            }
+            2 => {
+                let _ = std::process::Command::new("sh")
+                    .args(["-c", "mpv --player-operation-mode=pseudo-gui"])
+                    .spawn();
+            }
+            3 => {
+                let _ = std::process::Command::new("footclient")
+                    .current_dir(&env::var("HOME").unwrap_or_default())
+                    .args(["-e", "yazi"])
+                    .spawn();
+            }
+            4 => {
+                let _ = std::process::Command::new("footclient")
+                    .args(["-e", "btop"])
+                    .spawn();
+            }
+            5 => {
+                let _ = std::process::Command::new("footclient")
+                    .args(["-e", "nvim"])
+                    .spawn();
+            }
             _ => {}
         }
         std::process::exit(0);
@@ -143,7 +223,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     });
 
-    // Escape key → close the launcher silently
     ui.on_close_requested(move || {
         std::process::exit(0);
     });

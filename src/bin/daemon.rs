@@ -1,133 +1,18 @@
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
-use tokio::fs::{read_dir, File};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
 use tokio::sync::Mutex;
 use zbus::{dbus_interface, dbus_proxy, zvariant::Value, ConnectionBuilder};
+use log::{info, warn, error};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AppEntry { name: String, exec: String, icon: Option<String>, needs_terminal: bool }
-
-#[derive(Serialize)]
-struct AppInit { name: String, icon: Option<String> }
-#[derive(Serialize)]
-struct InitPayload { apps: Vec<AppInit> }
-
-#[derive(Serialize, Deserialize)]
-struct AppCache {
-    version: u32,
-    apps: Vec<AppEntry>,
-}
-
-struct DaemonState { apps: Vec<AppEntry> }
-
-fn find_icon(name: &str) -> Option<String> {
-    if name.starts_with('/') && PathBuf::from(name).exists() { return Some(name.to_string()); }
-    let exts = ["svg", "png", "xpm"];
-    let bases = ["/usr/share/icons/hicolor/scalable/apps", "/usr/share/icons/hicolor/48x48/apps", "/usr/share/icons/Papirus/64x64/apps", "/usr/share/pixmaps"];
-    for base in &bases {
-        for ext in &exts {
-            let path = format!("{}/{}.{}", base, name, ext);
-            if PathBuf::from(&path).exists() { return Some(path); }
-        }
-    }
-    None
-}
-
-// --------------------------------------------------------
-// ICON / APP CACHE (avoids re-crawling on every daemon start)
-// --------------------------------------------------------
-fn cache_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let mut path = PathBuf::from(home);
-    path.push(".cache/unified-launcher/apps_cache.json");
-    path
-}
-
-fn get_app_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
-    ];
-    if let Ok(home) = env::var("HOME") {
-        dirs.push(PathBuf::from(format!("{}/.local/share/applications", home)));
-        let flatpak_user = PathBuf::from(format!("{}/.local/share/flatpak/exports/share/applications", home));
-        if flatpak_user.exists() { dirs.push(flatpak_user); }
-    }
-    let snap_path = PathBuf::from("/var/lib/snapd/desktop/applications");
-    if snap_path.exists() { dirs.push(snap_path); }
-    dirs
-}
-
-/// Returns the most recent mtime across all application directories.
-fn source_dirs_max_mtime() -> Option<SystemTime> {
-    let mut latest: Option<SystemTime> = None;
-    for dir in get_app_dirs() {
-        if let Ok(meta) = fs::metadata(&dir) {
-            if let Ok(mtime) = meta.modified() {
-                match latest {
-                    Some(t) if mtime > t => latest = Some(mtime),
-                    None => latest = Some(mtime),
-                    _ => {}
-                }
-            }
-        }
-    }
-    latest
-}
-
-fn load_cache() -> Option<Vec<AppEntry>> {
-    let path = cache_path();
-
-    let cache_meta = fs::metadata(&path).ok()?;
-    let cache_mtime = cache_meta.modified().ok()?;
-
-    // Invalidate if any source directory changed after the cache was written
-    if let Some(src_mtime) = source_dirs_max_mtime() {
-        if src_mtime > cache_mtime {
-            return None;
-        }
-    }
-
-    let data = fs::read_to_string(&path).ok()?;
-    let cache: AppCache = serde_json::from_str(&data).ok()?;
-    if cache.version != 1 { return None; }
-    Some(cache.apps)
-}
-
-fn save_cache(apps: &[AppEntry]) {
-    let path = cache_path();
-    if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
-    }
-    let cache = AppCache {
-        version: 1,
-        apps: apps.to_vec(),
-    };
-    if let Ok(data) = serde_json::to_string(&cache) {
-        let _ = fs::write(&path, data);
-    }
-}
-
-// --------------------------------------------------------
-// POWER / SESSION ACTIONS (Sway-optimized)
-// --------------------------------------------------------
-fn handle_power_action(action: &str) {
-    let (cmd, args) = match action {
-        "lock"     => ("swaylock",       vec!["-f", "-c", "000000"] as Vec<&str>),
-        "logout"   => ("swaymsg",        vec!["exit"]),
-        "shutdown" => ("systemctl",      vec!["poweroff"]),
-        "reboot"   => ("systemctl",      vec!["reboot"]),
-        _          => return,
-    };
-    let args_refs: Vec<&str> = args.iter().map(|s| *s).collect();
-    let _ = std::process::Command::new(cmd).args(args_refs).spawn();
-}
+use unified_launcher::cache::{load_cache, save_cache};
+use unified_launcher::desktop::crawl_desktop_entries;
+use unified_launcher::power::handle_power_action;
+use unified_launcher::types::{AppEntry, AppInit, DaemonState, InitPayload, socket_path};
 
 // --------------------------------------------------------
 // POLKIT AGENT INTERFACE
@@ -141,15 +26,16 @@ impl PolkitAgent {
         _action_id: String,
         message: String,
         _icon_name: String,
-        _details: std::collections::HashMap<String, String>,
+        _details: HashMap<String, String>,
         cookie: String,
-        _identities: Vec<(String, std::collections::HashMap<String, zbus::zvariant::OwnedValue>)>,
+        _identities: Vec<(String, HashMap<String, zbus::zvariant::OwnedValue>)>,
     ) {
-        let mut client_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("polkit-client"));
+        let mut client_exe = std::env::current_exe()
+            .unwrap_or_else(|_| PathBuf::from("polkit-client"));
         client_exe.pop();
         client_exe.push("polkit-client");
 
-        // Use a temp file to securely pass the password back from the polkit-client GUI.
+        // Secure temp file for password transport
         let tmp_path = format!("/tmp/polkit_pass_{}", std::process::id());
         let tmp_path_b = tmp_path.clone();
 
@@ -161,7 +47,6 @@ impl PolkitAgent {
             .output()
             .await;
 
-        // Read password from temp file if polkit-client succeeded
         let password: Option<String> = if let Ok(out) = output {
             if out.status.success() {
                 fs::read_to_string(&tmp_path).ok().map(|s| s.trim().to_string())
@@ -174,7 +59,9 @@ impl PolkitAgent {
         let _ = fs::remove_file(&tmp_path);
 
         if let Some(password) = password {
-            if password.is_empty() { return; }
+            if password.is_empty() {
+                return;
+            }
 
             let user = env::var("USER").unwrap_or_else(|_| "root".to_string());
 
@@ -188,16 +75,19 @@ impl PolkitAgent {
                 .stderr(Stdio::inherit())
                 .spawn()
             {
-                if let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) {
-
-                    let _ = stdin.write_all(format!("{}\n", cookie).as_bytes()).await;
+                if let (Some(mut stdin), Some(mut stdout)) =
+                    (child.stdin.take(), child.stdout.take())
+                {
+                    let _ = stdin
+                        .write_all(format!("{}\n", cookie).as_bytes())
+                        .await;
                     let _ = stdin.flush().await;
 
                     use tokio::io::AsyncReadExt;
                     let mut prompt = String::new();
                     let mut buf = [0; 1];
 
-                    println!("\n[Polkit] Handshake initiated. Waiting for PAM...");
+                    info!("PolKit handshake initiated. Waiting for PAM...");
                     loop {
                         match stdout.read(&mut buf).await {
                             Ok(0) => break,
@@ -208,23 +98,27 @@ impl PolkitAgent {
                                 let _ = std::io::Write::flush(&mut std::io::stdout());
 
                                 let lower = prompt.to_lowercase();
-                                if lower.ends_with("password: ") || lower.ends_with("password:") {
-                                    println!("\n[Polkit] System is ready. Firing payload...");
+                                if lower.ends_with("password: ")
+                                    || lower.ends_with("password:")
+                                {
+                                    info!("PolKit system ready. Sending password...");
                                     break;
                                 }
                             }
                             Err(e) => {
-                                eprintln!("\n[Polkit] Error reading PAM output: {}", e);
+                                error!("Error reading PAM output: {}", e);
                                 break;
                             }
                         }
                     }
 
-                    let _ = stdin.write_all(format!("{}\n", password).as_bytes()).await;
+                    let _ = stdin
+                        .write_all(format!("{}\n", password).as_bytes())
+                        .await;
                     let _ = stdin.flush().await;
 
                     let exit_status = child.wait().await;
-                    println!("[Polkit] Transaction complete. PAM exit status: {:?}", exit_status);
+                    info!("PolKit transaction complete. PAM exit status: {:?}", exit_status);
                 }
             }
         }
@@ -241,26 +135,32 @@ impl PolkitAgent {
 trait Authority {
     fn register_authentication_agent(
         &self,
-        subject: &(String, std::collections::HashMap<&str, zbus::zvariant::Value<'_>>),
+        subject: &(String, HashMap<&str, zbus::zvariant::Value<'_>>),
         locale: &str,
         object_path: &str,
     ) -> zbus::Result<()>;
 }
 
 // --------------------------------------------------------
-// MAIN DAEMON LOOP
+// MAIN
 // --------------------------------------------------------
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("info"),
+    )
+    .format_timestamp_millis()
+    .init();
+
     // ---- LOAD / CRAWL APPS (with caching) ----
     let apps: Vec<AppEntry> = if let Some(cached) = load_cache() {
-        println!("[Daemon] Loaded {} apps from cache.", cached.len());
+        info!("Loaded {} apps from cache.", cached.len());
         cached
     } else {
-        println!("[Daemon] Crawling vaults (apps)...");
+        info!("Crawling desktop entries...");
         let mut apps = crawl_desktop_entries().await;
         apps.sort_by(|a, b| a.name.cmp(&b.name));
-        println!("[Daemon] Vault locked: {} apps.", apps.len());
+        info!("Found {} apps.", apps.len());
         save_cache(&apps);
         apps
     };
@@ -268,28 +168,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ---- Register PolKit authentication agent (non-fatal) ----
     let dbus_conn = match ConnectionBuilder::system() {
-        Ok(builder) => match builder.serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent) {
-            Ok(ready) => match ready.build().await {
-                Ok(c) => c,
+        Ok(builder) => {
+            match builder.serve_at(
+                "/org/freedesktop/PolicyKit1/AuthenticationAgent",
+                PolkitAgent,
+            ) {
+                Ok(ready) => match ready.build().await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        warn!("Could not connect to system D-Bus: {}", e);
+                        return;
+                    }
+                },
                 Err(e) => {
-                    eprintln!("[Daemon] WARNING: Could not connect to system D-Bus: {}", e);
-                    return Ok(());
+                    warn!("Could not serve PolKit agent: {}", e);
+                    return;
                 }
-            },
-            Err(e) => {
-                eprintln!("[Daemon] WARNING: Could not serve PolKit agent: {}", e);
-                return Ok(());
             }
-        },
+        }
         Err(e) => {
-            eprintln!("[Daemon] WARNING: Could not create D-Bus connection builder: {}", e);
-            return Ok(());
+            warn!("Could not create D-Bus connection builder: {}", e);
+            return;
         }
     };
 
     match AuthorityProxy::new(&dbus_conn).await {
         Ok(authority) => {
-            let mut subject_details = std::collections::HashMap::new();
+            let mut subject_details = HashMap::new();
             let session_id = env::var("XDG_SESSION_ID").unwrap_or_default();
 
             let subject = if !session_id.is_empty() {
@@ -301,26 +206,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ("unix-process".to_string(), subject_details)
             };
 
-            match authority.register_authentication_agent(
-                &subject,
-                "en_US.UTF-8",
-                "/org/freedesktop/PolicyKit1/AuthenticationAgent",
-            ).await {
-                Ok(_) => println!("[Daemon] PolKit agent registered on the system bus."),
-                Err(e) => eprintln!("[Daemon] WARNING: Could not register PolKit agent: {}", e),
+            match authority
+                .register_authentication_agent(
+                    &subject,
+                    "en_US.UTF-8",
+                    "/org/freedesktop/PolicyKit1/AuthenticationAgent",
+                )
+                .await
+            {
+                Ok(_) => info!("PolKit agent registered on the system bus."),
+                Err(e) => warn!("Could not register PolKit agent: {}", e),
             }
         }
-        Err(e) => {
-            eprintln!("[Daemon] WARNING: Could not connect to PolKit Authority: {}", e);
-        }
+        Err(e) => warn!("Could not connect to PolKit Authority: {}", e),
     }
 
     // ---- Unix socket listener ----
-    let socket_path = env::var("UNIFIED_LAUNCHER_SOCKET")
-        .unwrap_or_else(|_| "/tmp/unified_launcher.sock".to_string());
-    let _ = fs::remove_file(&socket_path);
-    let listener = UnixListener::bind(&socket_path)?;
-    println!("[Daemon] Listening on {}", socket_path);
+    let sock_path = socket_path();
+    let _ = fs::remove_file(&sock_path);
+    let listener = match UnixListener::bind(&sock_path) {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Could not bind socket {}: {}", sock_path, e);
+            return;
+        }
+    };
+    info!("Listening on {}", sock_path);
 
     loop {
         match listener.accept().await {
@@ -331,9 +242,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let vault = state_clone.lock().await;
 
                     let payload_data = InitPayload {
-                        apps: vault.apps.iter().map(|a| AppInit { name: a.name.clone(), icon: a.icon.clone() }).collect(),
+                        apps: vault
+                            .apps
+                            .iter()
+                            .map(|a| AppInit {
+                                name: a.name.clone(),
+                                icon: a.icon.clone(),
+                            })
+                            .collect(),
                     };
-                    let payload = serde_json::to_string(&payload_data).unwrap() + "\n";
+                    let payload =
+                        serde_json::to_string(&payload_data).unwrap() + "\n";
                     let _ = writer.write_all(payload.as_bytes()).await;
                     drop(vault);
 
@@ -341,7 +260,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     let mut command_line = String::new();
 
                     while let Ok(bytes_read) = buf_reader.read_line(&mut command_line).await {
-                        if bytes_read == 0 { break; }
+                        if bytes_read == 0 {
+                            break;
+                        }
                         let received = command_line.trim();
                         let vault = state_clone.lock().await;
 
@@ -353,9 +274,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     if app.needs_terminal {
                                         let mut term_args = vec!["-e", cmd];
                                         term_args.extend(args);
-                                        let _ = std::process::Command::new("footclient").args(term_args).spawn();
+                                        let _ = std::process::Command::new("footclient")
+                                            .args(term_args)
+                                            .spawn();
                                     } else {
-                                        let _ = std::process::Command::new(cmd).args(args).spawn();
+                                        let _ = std::process::Command::new(cmd)
+                                            .args(args)
+                                            .spawn();
                                     }
                                 }
                             }
@@ -366,40 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             }
-            Err(e) => eprintln!("Connection failed: {}", e),
+            Err(e) => error!("Connection failed: {}", e),
         }
     }
-}
-
-async fn crawl_desktop_entries() -> Vec<AppEntry> {
-    let mut entries = Vec::new();
-    for dir_path in get_app_dirs() {
-        if !dir_path.exists() { continue; }
-        if let Ok(mut dir) = read_dir(&dir_path).await {
-            while let Ok(Some(entry)) = dir.next_entry().await {
-                let path = entry.path();
-                if path.extension().and_then(|e| e.to_str()) == Some("desktop") {
-                    if let Some(app) = parse_single_desktop_file(&path).await { entries.push(app); }
-                }
-            }
-        }
-    }
-    entries
-}
-
-async fn parse_single_desktop_file(path: &PathBuf) -> Option<AppEntry> {
-    let file = File::open(path).await.ok()?;
-    let mut reader = BufReader::new(file).lines();
-    let mut name = String::new(); let mut exec = String::new();
-    let mut icon = None;
-    let mut no_display = false; let mut needs_terminal = false;
-    while let Ok(Some(line)) = reader.next_line().await {
-        if line.starts_with("Name=") && !line.contains("Name[") && name.is_empty() { name = line[5..].trim().to_string(); }
-        else if line.starts_with("Exec=") && exec.is_empty() { exec = line[5..].split_whitespace().filter(|&w| !w.starts_with('%')).collect::<Vec<_>>().join(" "); }
-        else if line.starts_with("Icon=") && icon.is_none() { icon = find_icon(line[5..].trim()); }
-        else if line.starts_with("NoDisplay=true") || line.starts_with("Hidden=true") { no_display = true; }
-        else if line.starts_with("Terminal=true") { needs_terminal = true; }
-    }
-    if no_display || name.is_empty() || exec.is_empty() { None }
-    else { Some(AppEntry { name, exec, icon, needs_terminal }) }
 }
