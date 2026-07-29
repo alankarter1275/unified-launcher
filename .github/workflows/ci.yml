@@ -20,16 +20,27 @@ jobs:
         with:
           components: clippy
 
+      - name: install system dependencies (slint)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libgl-dev \
+            libegl-dev \
+            fontconfig
+
       - name: cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # ---------- BUILD ----------
+      # ---------- BUILD (continue on error so we can publish logs) ----------
       - name: build
         id: build
         run: |
           set -o pipefail
           cargo build --release --message-format=short 2>&1 \
             | tee /tmp/build.txt
+        continue-on-error: true
 
       - name: publish build log on failure
         if: steps.build.outcome == 'failure'
@@ -52,7 +63,7 @@ jobs:
         if: steps.build.outcome == 'failure'
         run: exit 1
 
-      # ---------- CLIPPY ----------
+      # ---------- CLIPPY (continue on error so we can publish logs) ----------
       - name: clippy
         id: clippy
         run: |
