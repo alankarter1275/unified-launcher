@@ -178,27 +178,52 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Vault locked: {} apps.", apps.len());
     let state = Arc::new(Mutex::new(DaemonState { apps }));
 
-    // Register PolKit authentication agent on D-Bus
-    let dbus_conn = ConnectionBuilder::system()?
-        .serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent)?
-        .build()
-        .await?;
-
-    let authority = AuthorityProxy::new(&dbus_conn).await?;
-    let mut subject_details = std::collections::HashMap::new();
-    let session_id = env::var("XDG_SESSION_ID").unwrap_or_default();
-
-    let subject = if !session_id.is_empty() {
-        subject_details.insert("session-id", Value::from(session_id));
-        ("unix-session".to_string(), subject_details)
-    } else {
-        subject_details.insert("pid", Value::U32(std::process::id()));
-        subject_details.insert("start-time", Value::U64(0));
-        ("unix-process".to_string(), subject_details)
+    // Register PolKit authentication agent on D-Bus (non-fatal so existing agents don't block us)
+    let dbus_conn = match ConnectionBuilder::system()
+        .serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent)
+    {
+        Ok(builder) => match builder.build().await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[Daemon] WARNING: Could not connect to system D-Bus: {}", e);
+                eprintln!("[Daemon] PolKit authentication agent will not be available.");
+                return Ok(());
+            }
+        },
+        Err(e) => {
+            eprintln!("[Daemon] WARNING: Could not serve PolKit agent on D-Bus: {}", e);
+            return Ok(());
+        }
     };
 
-    authority.register_authentication_agent(&subject, "en_US.UTF-8", "/org/freedesktop/PolicyKit1/AuthenticationAgent").await?;
-    println!("Native Polkit Agent registered on the system bus.");
+    match AuthorityProxy::new(&dbus_conn).await {
+        Ok(authority) => {
+            let mut subject_details = std::collections::HashMap::new();
+            let session_id = env::var("XDG_SESSION_ID").unwrap_or_default();
+
+            let subject = if !session_id.is_empty() {
+                subject_details.insert("session-id", Value::from(session_id));
+                ("unix-session".to_string(), subject_details)
+            } else {
+                subject_details.insert("pid", Value::U32(std::process::id()));
+                subject_details.insert("start-time", Value::U64(0));
+                ("unix-process".to_string(), subject_details)
+            };
+
+            match authority.register_authentication_agent(
+                &subject,
+                "en_US.UTF-8",
+                "/org/freedesktop/PolicyKit1/AuthenticationAgent",
+            ).await {
+                Ok(_) => println!("[Daemon] PolKit agent registered on the system bus."),
+                Err(e) => eprintln!("[Daemon] WARNING: Could not register PolKit agent: {}. Another agent may already be active.", e),
+            }
+        }
+        Err(e) => {
+            eprintln!("[Daemon] WARNING: Could not connect to PolKit Authority: {}", e);
+            eprintln!("[Daemon] PolKit authentication agent will not be available.");
+        }
+    }
 
     // Socket path: override via UNIFIED_LAUNCHER_SOCKET env var, default /tmp/unified_launcher.sock
     let socket_path = env::var("UNIFIED_LAUNCHER_SOCKET")

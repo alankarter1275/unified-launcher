@@ -1,4 +1,4 @@
-use slint::{ModelRc, VecModel, SharedString, Image, Model};
+use slint::{ModelRc, VecModel, SharedString, Image};
 use serde::Deserialize;
 use std::os::unix::net::UnixStream;
 use std::io::{BufRead, BufReader, Write};
@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = env::var("UNIFIED_LAUNCHER_SOCKET")
         .unwrap_or_else(|_| "/tmp/unified_launcher.sock".to_string());
 
-    let mut stream = UnixStream::connect(&socket_path)
+    let stream = UnixStream::connect(&socket_path)
         .unwrap_or_else(|_| panic!("Daemon is not running! Start 'unified-launcher daemon' first. (socket: {})", socket_path));
 
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -104,7 +104,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clone BEFORE tx_exec gets moved into the execute_selected closure
     let tx_power = tx_exec.clone();
 
-    let ui_handle_exec = ui.as_weak();
     ui.on_execute_selected(move |selected, _is_shift| {
         let _ = tx_exec.send(format!("EXEC_APP:{}", selected.as_str()));
         std::process::exit(0);
