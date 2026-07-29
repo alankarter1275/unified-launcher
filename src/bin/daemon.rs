@@ -179,19 +179,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let state = Arc::new(Mutex::new(DaemonState { apps }));
 
     // Register PolKit authentication agent on D-Bus (non-fatal so existing agents don't block us)
-    let dbus_conn = match ConnectionBuilder::system()
-        .serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent)
-    {
-        Ok(builder) => match builder.build().await {
-            Ok(c) => c,
+    let dbus_conn = match ConnectionBuilder::system() {
+        Ok(builder) => match builder.serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent) {
+            Ok(ready) => match ready.build().await {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("[Daemon] WARNING: Could not connect to system D-Bus: {}", e);
+                    eprintln!("[Daemon] PolKit authentication agent will not be available.");
+                    return Ok(());
+                }
+            },
             Err(e) => {
-                eprintln!("[Daemon] WARNING: Could not connect to system D-Bus: {}", e);
-                eprintln!("[Daemon] PolKit authentication agent will not be available.");
+                eprintln!("[Daemon] WARNING: Could not serve PolKit agent: {}", e);
                 return Ok(());
             }
         },
         Err(e) => {
-            eprintln!("[Daemon] WARNING: Could not serve PolKit agent on D-Bus: {}", e);
+            eprintln!("[Daemon] WARNING: Could not create D-Bus connection builder: {}", e);
             return Ok(());
         }
     };
