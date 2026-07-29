@@ -88,6 +88,8 @@ export component LauncherWindow inherits Window {
     callback execute_selected(string, bool);
     callback item_highlighted(int, int, string);
     callback sidebar_action(int);
+    callback power_action(string);
+    callback close_requested();
 
     public function focus_search() { search_input.focus(); }
     init => { root.focus_search(); }
@@ -110,7 +112,7 @@ export component LauncherWindow inherits Window {
 
     FocusScope {
         key-pressed(event) => {
-            if (event.text == Key.Escape) { return accept; }
+            if (event.text == Key.Escape) { root.close_requested(); return accept; }
             if (event.text == Key.Return) {
                 if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].text, event.modifiers.shift); }
                 return accept;
@@ -265,12 +267,64 @@ export component LauncherWindow inherits Window {
                     GridLayout {
                         visible: root.current_view == "power"; padding: 24px; spacing: 24px; vertical-stretch: 1;
                         Row {
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #3e4451; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰌾"; color: #e5c07b; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Lock"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #4b2a2e; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰐥"; color: #e06c75; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Shutdown"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
+                            power_lock := Rectangle {
+                                background: transparent; border-radius: 24px;
+                                ta_lock := TouchArea {
+                                    width: 100%; height: 100%; mouse-cursor: pointer;
+                                    clicked => { root.power_action("lock"); }
+                                }
+                                Rectangle {
+                                    width: 100%; height: 100%; border-radius: 24px; background: #3e4451;
+                                    VerticalLayout { alignment: center; spacing: 12px;
+                                        Text { text: "󰌾"; color: #e5c07b; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; }
+                                        Text { text: "Lock"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                    }
+                                }
+                            }
+                            power_shutdown := Rectangle {
+                                background: transparent; border-radius: 24px;
+                                ta_shutdown := TouchArea {
+                                    width: 100%; height: 100%; mouse-cursor: pointer;
+                                    clicked => { root.power_action("shutdown"); }
+                                }
+                                Rectangle {
+                                    width: 100%; height: 100%; border-radius: 24px; background: #4b2a2e;
+                                    VerticalLayout { alignment: center; spacing: 12px;
+                                        Text { text: "󰐥"; color: #e06c75; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; }
+                                        Text { text: "Shutdown"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                    }
+                                }
+                            }
                         }
                         Row {
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #2c323c; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰍃"; color: #56b6c2; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Logout"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #3e4451; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰜉"; color: #98c379; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Reboot"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
+                            power_logout := Rectangle {
+                                background: transparent; border-radius: 24px;
+                                ta_logout := TouchArea {
+                                    width: 100%; height: 100%; mouse-cursor: pointer;
+                                    clicked => { root.power_action("logout"); }
+                                }
+                                Rectangle {
+                                    width: 100%; height: 100%; border-radius: 24px; background: #2c323c;
+                                    VerticalLayout { alignment: center; spacing: 12px;
+                                        Text { text: "󰍃"; color: #56b6c2; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; }
+                                        Text { text: "Logout"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                    }
+                                }
+                            }
+                            power_reboot := Rectangle {
+                                background: transparent; border-radius: 24px;
+                                ta_reboot := TouchArea {
+                                    width: 100%; height: 100%; mouse-cursor: pointer;
+                                    clicked => { root.power_action("reboot"); }
+                                }
+                                Rectangle {
+                                    width: 100%; height: 100%; border-radius: 24px; background: #3e4451;
+                                    VerticalLayout { alignment: center; spacing: 12px;
+                                        Text { text: "󰜉"; color: #98c379; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; }
+                                        Text { text: "Reboot"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; }
+                                    }
+                                }
+                            }
                         }
                     }
                 }

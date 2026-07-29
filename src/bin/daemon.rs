@@ -33,6 +33,21 @@ fn find_icon(name: &str) -> Option<String> {
 }
 
 // --------------------------------------------------------
+// POWER / SESSION ACTIONS (Sway-optimized)
+// --------------------------------------------------------
+fn handle_power_action(action: &str) {
+    let (cmd, args) = match action {
+        "lock"     => ("swaylock",       vec!["-f", "-c", "000000"] as Vec<&str>),
+        "logout"   => ("swaymsg",        vec!["exit"]),
+        "shutdown" => ("systemctl",      vec!["poweroff"]),
+        "reboot"   => ("systemctl",      vec!["reboot"]),
+        _          => return,
+    };
+    let args_refs: Vec<&str> = args.iter().map(|s| *s).collect();
+    let _ = std::process::Command::new(cmd).args(args_refs).spawn();
+}
+
+// --------------------------------------------------------
 // POLKIT AGENT INTERFACE
 // --------------------------------------------------------
 struct PolkitAgent;
@@ -52,76 +67,84 @@ impl PolkitAgent {
         client_exe.pop();
         client_exe.push("polkit-client");
 
+        // Use a temp file (0600) to securely pass the password back from the polkit-client GUI.
+        // This avoids stdout-scraping fragility and leaking into terminal logs.
+        let tmp_path = format!("/tmp/polkit_pass_{}", std::process::id());
+        let tmp_path_b = tmp_path.clone();
+
         let output = tokio::process::Command::new(client_exe)
             .arg(&message)
-            .stdout(std::process::Stdio::piped())
+            .arg(&tmp_path_b)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::inherit())
             .output()
             .await;
 
-        if let Ok(out) = output {
+        // Read password from temp file if polkit-client succeeded
+        let password: Option<String> = if let Ok(out) = output {
             if out.status.success() {
-                let full_output = String::from_utf8_lossy(&out.stdout).to_string();
+                fs::read_to_string(&tmp_path).ok().map(|s| s.trim().to_string())
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        // Clean up the temp file regardless
+        let _ = fs::remove_file(&tmp_path);
 
-                let password = if let (Some(start), Some(end)) = (full_output.find("__PASS__"), full_output.find("__END__")) {
-                    full_output[start + 8..end].to_string()
-                } else {
-                    full_output.trim().to_string()
-                };
+        if let Some(password) = password {
+            if password.is_empty() { return; }
 
-                let user = env::var("USER").unwrap_or_else(|_| "root".to_string());
+            let user = env::var("USER").unwrap_or_else(|_| "root".to_string());
 
-                use tokio::process::Command;
-                use std::process::Stdio;
+            use tokio::process::Command;
+            use std::process::Stdio;
 
-                if let Ok(mut child) = Command::new("/usr/lib/polkit-1/polkit-agent-helper-1")
-                    .arg(&user)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    // Inherit stderr so we can see PAM's anger directly in the daemon console if it fails
-                    .stderr(Stdio::inherit())
-                    .spawn()
-                {
-                    if let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) {
+            if let Ok(mut child) = Command::new("/usr/lib/polkit-1/polkit-agent-helper-1")
+                .arg(&user)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()
+            {
+                if let (Some(mut stdin), Some(mut stdout)) = (child.stdin.take(), child.stdout.take()) {
 
-                        let _ = stdin.write_all(format!("{}\n", cookie).as_bytes()).await;
-                        let _ = stdin.flush().await;
+                    let _ = stdin.write_all(format!("{}\n", cookie).as_bytes()).await;
+                    let _ = stdin.flush().await;
 
-                        use tokio::io::AsyncReadExt;
-                        let mut prompt = String::new();
-                        let mut buf = [0; 1];
+                    use tokio::io::AsyncReadExt;
+                    let mut prompt = String::new();
+                    let mut buf = [0; 1];
 
-                        println!("\n[Polkit] Handshake initiated. Waiting for PAM...");
-                        loop {
-                            match stdout.read(&mut buf).await {
-                                Ok(0) => break,
-                                Ok(_) => {
-                                    let c = buf[0] as char;
-                                    prompt.push(c);
+                    println!("\n[Polkit] Handshake initiated. Waiting for PAM...");
+                    loop {
+                        match stdout.read(&mut buf).await {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let c = buf[0] as char;
+                                prompt.push(c);
+                                print!("{}", c);
+                                let _ = std::io::Write::flush(&mut std::io::stdout());
 
-                                    // Print the exact output to your daemon console so we can monitor it
-                                    print!("{}", c);
-                                    let _ = std::io::Write::flush(&mut std::io::stdout());
-
-                                    let lower = prompt.to_lowercase();
-                                    if lower.ends_with("password: ") || lower.ends_with("password:") {
-                                        println!("\n[Polkit] System is ready. Firing payload...");
-                                        break;
-                                    }
-                                }
-                                Err(e) => {
-                                    eprintln!("\n[Polkit] Error reading PAM output: {}", e);
+                                let lower = prompt.to_lowercase();
+                                if lower.ends_with("password: ") || lower.ends_with("password:") {
+                                    println!("\n[Polkit] System is ready. Firing payload...");
                                     break;
                                 }
                             }
+                            Err(e) => {
+                                eprintln!("\n[Polkit] Error reading PAM output: {}", e);
+                                break;
+                            }
                         }
-
-                        let _ = stdin.write_all(format!("{}\n", password).as_bytes()).await;
-                        let _ = stdin.flush().await;
-
-                        // THE FIX: Trap `stdin` and force it to stay open by awaiting the child process INSIDE the scope
-                        let exit_status = child.wait().await;
-                        println!("[Polkit] Transaction complete. PAM exit status: {:?}", exit_status);
                     }
+
+                    let _ = stdin.write_all(format!("{}\n", password).as_bytes()).await;
+                    let _ = stdin.flush().await;
+
+                    let exit_status = child.wait().await;
+                    println!("[Polkit] Transaction complete. PAM exit status: {:?}", exit_status);
                 }
             }
         }
@@ -155,6 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Vault locked: {} apps.", apps.len());
     let state = Arc::new(Mutex::new(DaemonState { apps }));
 
+    // Register PolKit authentication agent on D-Bus
     let dbus_conn = ConnectionBuilder::system()?
         .serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent)?
         .build()
@@ -176,9 +200,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     authority.register_authentication_agent(&subject, "en_US.UTF-8", "/org/freedesktop/PolicyKit1/AuthenticationAgent").await?;
     println!("Native Polkit Agent registered on the system bus.");
 
-    let socket_path = "/tmp/unified_launcher.sock";
-    let _ = fs::remove_file(socket_path);
-    let listener = UnixListener::bind(socket_path)?;
+    // Socket path: override via UNIFIED_LAUNCHER_SOCKET env var, default /tmp/unified_launcher.sock
+    let socket_path = env::var("UNIFIED_LAUNCHER_SOCKET")
+        .unwrap_or_else(|_| "/tmp/unified_launcher.sock".to_string());
+    let _ = fs::remove_file(&socket_path);
+    let listener = UnixListener::bind(&socket_path)?;
     println!("Daemon running. Listening on {}", socket_path);
 
     loop {
@@ -218,6 +244,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     }
                                 }
                             }
+                        } else if let Some(action) = received.strip_prefix("POWER_ACTION:") {
+                            handle_power_action(action);
+                            // Don't drop the connection; let power action complete independently
                         }
                         command_line.clear();
                     }
@@ -230,8 +259,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn crawl_desktop_entries() -> Vec<AppEntry> {
     let mut entries = Vec::new();
-    let mut paths_to_check = vec![PathBuf::from("/usr/share/applications")];
-    if let Ok(home) = env::var("HOME") { paths_to_check.push(PathBuf::from(format!("{}/.local/share/applications", home))); }
+    let mut paths_to_check = vec![
+        PathBuf::from("/usr/share/applications"),
+        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+    ];
+    if let Ok(home) = env::var("HOME") {
+        paths_to_check.push(PathBuf::from(format!("{}/.local/share/applications", home)));
+        let flatpak_user = PathBuf::from(format!("{}/.local/share/flatpak/exports/share/applications", home));
+        if flatpak_user.exists() { paths_to_check.push(flatpak_user); }
+    }
+    // Also check snap applications
+    let snap_path = PathBuf::from("/var/lib/snapd/desktop/applications");
+    if snap_path.exists() { paths_to_check.push(snap_path); }
+
     for dir_path in paths_to_check {
         if let Ok(mut dir) = read_dir(&dir_path).await {
             while let Ok(Some(entry)) = dir.next_entry().await {
