@@ -12,6 +12,10 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -33,29 +37,51 @@ jobs:
       - name: cache cargo
         uses: Swatinem/rust-cache@v2
 
-      # ---------- BUILD (continue on error so we can publish logs) ----------
+      - name: check
+        id: check
+        run: |
+          cargo check --message-format=short 2>&1 | tee /tmp/check.txt
+        continue-on-error: true
+
+      - name: publish check log on failure
+        if: steps.check.outcome == 'failure'
+        run: |
+          mkdir -p ci-logs
+          grep -E "^error" /tmp/check.txt | head -100 > ci-logs/check-latest.txt || true
+          if [ ! -s ci-logs/check-latest.txt ]; then
+            tail -100 /tmp/check.txt > ci-logs/check-latest.txt || true
+          fi
+          echo "--- run $GITHUB_RUN_ID ---" >> ci-logs/check-latest.txt
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          git add -f ci-logs/check-latest.txt
+          git commit -m "ci: publish check failure [skip ci]" || true
+          git pull --rebase --autostash origin "$GITHUB_REF_NAME" 2>/dev/null || true
+          git push origin "HEAD:$GITHUB_REF_NAME" 2>/dev/null || true
+
+      - name: fail if check failed
+        if: steps.check.outcome == 'failure'
+        run: exit 1
+
       - name: build
         id: build
         run: |
-          set -o pipefail
-          cargo build --release --message-format=short 2>&1 \
-            | tee /tmp/build.txt
+          cargo build --release --message-format=short 2>&1 | tee /tmp/build.txt
         continue-on-error: true
 
       - name: publish build log on failure
         if: steps.build.outcome == 'failure'
         run: |
           mkdir -p ci-logs
-          grep -E "error\[|aborting" /tmp/build.txt | head -100 > ci-logs/build-latest.txt || true
+          grep -E "^error" /tmp/build.txt | head -100 > ci-logs/build-latest.txt || true
           if [ ! -s ci-logs/build-latest.txt ]; then
-            echo "(no lines matched; last 100 lines of output)" > ci-logs/build-latest.txt
-            tail -100 /tmp/build.txt >> ci-logs/build-latest.txt || true
+            tail -100 /tmp/build.txt > ci-logs/build-latest.txt || true
           fi
           echo "--- run $GITHUB_RUN_ID ---" >> ci-logs/build-latest.txt
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           git add -f ci-logs/build-latest.txt
-          git commit -m "ci: publish build failure log [skip ci]" || true
+          git commit -m "ci: publish build failure [skip ci]" || true
           git pull --rebase --autostash origin "$GITHUB_REF_NAME" 2>/dev/null || true
           git push origin "HEAD:$GITHUB_REF_NAME" 2>/dev/null || true
 
@@ -63,13 +89,10 @@ jobs:
         if: steps.build.outcome == 'failure'
         run: exit 1
 
-      # ---------- CLIPPY (continue on error so we can publish logs) ----------
       - name: clippy
         id: clippy
         run: |
-          set -o pipefail
-          cargo clippy --all-targets --message-format=short 2>&1 \
-            | tee /tmp/clippy.txt
+          cargo clippy --all-targets --message-format=short 2>&1 | tee /tmp/clippy.txt
         continue-on-error: true
 
       - name: publish clippy log on failure
@@ -78,8 +101,7 @@ jobs:
           mkdir -p ci-logs
           grep -E "error|warning:" /tmp/clippy.txt | head -100 > ci-logs/clippy-latest.txt || true
           if [ ! -s ci-logs/clippy-latest.txt ]; then
-            echo "(no lines matched; last 100 lines of output)" > ci-logs/clippy-latest.txt
-            tail -100 /tmp/clippy.txt >> ci-logs/clippy-latest.txt || true
+            tail -100 /tmp/clippy.txt > ci-logs/clippy-latest.txt || true
           fi
           echo "--- run $GITHUB_RUN_ID ---" >> ci-logs/clippy-latest.txt
           git config user.name "github-actions"
