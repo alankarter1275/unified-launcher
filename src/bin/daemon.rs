@@ -3,6 +3,7 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 use tokio::fs::{read_dir, File};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixListener;
@@ -17,6 +18,12 @@ struct AppInit { name: String, icon: Option<String> }
 #[derive(Serialize)]
 struct InitPayload { apps: Vec<AppInit> }
 
+#[derive(Serialize, Deserialize)]
+struct AppCache {
+    version: u32,
+    apps: Vec<AppEntry>,
+}
+
 struct DaemonState { apps: Vec<AppEntry> }
 
 fn find_icon(name: &str) -> Option<String> {
@@ -30,6 +37,81 @@ fn find_icon(name: &str) -> Option<String> {
         }
     }
     None
+}
+
+// --------------------------------------------------------
+// ICON / APP CACHE (avoids re-crawling on every daemon start)
+// --------------------------------------------------------
+fn cache_path() -> PathBuf {
+    let home = env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let mut path = PathBuf::from(home);
+    path.push(".cache/unified-launcher/apps_cache.json");
+    path
+}
+
+fn get_app_dirs() -> Vec<PathBuf> {
+    let mut dirs = vec![
+        PathBuf::from("/usr/share/applications"),
+        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
+    ];
+    if let Ok(home) = env::var("HOME") {
+        dirs.push(PathBuf::from(format!("{}/.local/share/applications", home)));
+        let flatpak_user = PathBuf::from(format!("{}/.local/share/flatpak/exports/share/applications", home));
+        if flatpak_user.exists() { dirs.push(flatpak_user); }
+    }
+    let snap_path = PathBuf::from("/var/lib/snapd/desktop/applications");
+    if snap_path.exists() { dirs.push(snap_path); }
+    dirs
+}
+
+/// Returns the most recent mtime across all application directories.
+fn source_dirs_max_mtime() -> Option<SystemTime> {
+    let mut latest: Option<SystemTime> = None;
+    for dir in get_app_dirs() {
+        if let Ok(meta) = fs::metadata(&dir) {
+            if let Ok(mtime) = meta.modified() {
+                match latest {
+                    Some(t) if mtime > t => latest = Some(mtime),
+                    None => latest = Some(mtime),
+                    _ => {}
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn load_cache() -> Option<Vec<AppEntry>> {
+    let path = cache_path();
+
+    let cache_meta = fs::metadata(&path).ok()?;
+    let cache_mtime = cache_meta.modified().ok()?;
+
+    // Invalidate if any source directory changed after the cache was written
+    if let Some(src_mtime) = source_dirs_max_mtime() {
+        if src_mtime > cache_mtime {
+            return None;
+        }
+    }
+
+    let data = fs::read_to_string(&path).ok()?;
+    let cache: AppCache = serde_json::from_str(&data).ok()?;
+    if cache.version != 1 { return None; }
+    Some(cache.apps)
+}
+
+fn save_cache(apps: &[AppEntry]) {
+    let path = cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let cache = AppCache {
+        version: 1,
+        apps: apps.to_vec(),
+    };
+    if let Ok(data) = serde_json::to_string(&cache) {
+        let _ = fs::write(&path, data);
+    }
 }
 
 // --------------------------------------------------------
@@ -67,8 +149,7 @@ impl PolkitAgent {
         client_exe.pop();
         client_exe.push("polkit-client");
 
-        // Use a temp file (0600) to securely pass the password back from the polkit-client GUI.
-        // This avoids stdout-scraping fragility and leaking into terminal logs.
+        // Use a temp file to securely pass the password back from the polkit-client GUI.
         let tmp_path = format!("/tmp/polkit_pass_{}", std::process::id());
         let tmp_path_b = tmp_path.clone();
 
@@ -90,7 +171,6 @@ impl PolkitAgent {
         } else {
             None
         };
-        // Clean up the temp file regardless
         let _ = fs::remove_file(&tmp_path);
 
         if let Some(password) = password {
@@ -172,20 +252,27 @@ trait Authority {
 // --------------------------------------------------------
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Crawling Vaults (Apps)...");
-    let mut apps = crawl_desktop_entries().await;
-    apps.sort_by(|a, b| a.name.cmp(&b.name));
-    println!("Vault locked: {} apps.", apps.len());
+    // ---- LOAD / CRAWL APPS (with caching) ----
+    let apps: Vec<AppEntry> = if let Some(cached) = load_cache() {
+        println!("[Daemon] Loaded {} apps from cache.", cached.len());
+        cached
+    } else {
+        println!("[Daemon] Crawling vaults (apps)...");
+        let mut apps = crawl_desktop_entries().await;
+        apps.sort_by(|a, b| a.name.cmp(&b.name));
+        println!("[Daemon] Vault locked: {} apps.", apps.len());
+        save_cache(&apps);
+        apps
+    };
     let state = Arc::new(Mutex::new(DaemonState { apps }));
 
-    // Register PolKit authentication agent on D-Bus (non-fatal so existing agents don't block us)
+    // ---- Register PolKit authentication agent (non-fatal) ----
     let dbus_conn = match ConnectionBuilder::system() {
         Ok(builder) => match builder.serve_at("/org/freedesktop/PolicyKit1/AuthenticationAgent", PolkitAgent) {
             Ok(ready) => match ready.build().await {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("[Daemon] WARNING: Could not connect to system D-Bus: {}", e);
-                    eprintln!("[Daemon] PolKit authentication agent will not be available.");
                     return Ok(());
                 }
             },
@@ -220,21 +307,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "/org/freedesktop/PolicyKit1/AuthenticationAgent",
             ).await {
                 Ok(_) => println!("[Daemon] PolKit agent registered on the system bus."),
-                Err(e) => eprintln!("[Daemon] WARNING: Could not register PolKit agent: {}. Another agent may already be active.", e),
+                Err(e) => eprintln!("[Daemon] WARNING: Could not register PolKit agent: {}", e),
             }
         }
         Err(e) => {
             eprintln!("[Daemon] WARNING: Could not connect to PolKit Authority: {}", e);
-            eprintln!("[Daemon] PolKit authentication agent will not be available.");
         }
     }
 
-    // Socket path: override via UNIFIED_LAUNCHER_SOCKET env var, default /tmp/unified_launcher.sock
+    // ---- Unix socket listener ----
     let socket_path = env::var("UNIFIED_LAUNCHER_SOCKET")
         .unwrap_or_else(|_| "/tmp/unified_launcher.sock".to_string());
     let _ = fs::remove_file(&socket_path);
     let listener = UnixListener::bind(&socket_path)?;
-    println!("Daemon running. Listening on {}", socket_path);
+    println!("[Daemon] Listening on {}", socket_path);
 
     loop {
         match listener.accept().await {
@@ -275,7 +361,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         } else if let Some(action) = received.strip_prefix("POWER_ACTION:") {
                             handle_power_action(action);
-                            // Don't drop the connection; let power action complete independently
                         }
                         command_line.clear();
                     }
@@ -288,20 +373,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn crawl_desktop_entries() -> Vec<AppEntry> {
     let mut entries = Vec::new();
-    let mut paths_to_check = vec![
-        PathBuf::from("/usr/share/applications"),
-        PathBuf::from("/var/lib/flatpak/exports/share/applications"),
-    ];
-    if let Ok(home) = env::var("HOME") {
-        paths_to_check.push(PathBuf::from(format!("{}/.local/share/applications", home)));
-        let flatpak_user = PathBuf::from(format!("{}/.local/share/flatpak/exports/share/applications", home));
-        if flatpak_user.exists() { paths_to_check.push(flatpak_user); }
-    }
-    // Also check snap applications
-    let snap_path = PathBuf::from("/var/lib/snapd/desktop/applications");
-    if snap_path.exists() { paths_to_check.push(snap_path); }
-
-    for dir_path in paths_to_check {
+    for dir_path in get_app_dirs() {
+        if !dir_path.exists() { continue; }
         if let Ok(mut dir) = read_dir(&dir_path).await {
             while let Ok(Some(entry)) = dir.next_entry().await {
                 let path = entry.path();
