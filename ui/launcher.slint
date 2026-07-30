@@ -322,7 +322,7 @@ export component LauncherWindow inherits Window {
                             Rectangle {
                                 visible: !root.calc_mode;
                                 width: 100%; height: 100%;
-                                Flickable {
+                                list_flickable := Flickable {
                                     width: 100%; height: 100%; interactive: true;
                                     viewport-height: inner_layout.preferred-height;
                                     inner_layout := VerticalLayout {
