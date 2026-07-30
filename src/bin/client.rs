@@ -176,11 +176,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     ui.set_calc_error(false);
                     ui.set_calc_raw_result(raw.into());
                 }
-                Err(e) => {
+                Err(_e) => {
+                    // Just show "..." — don't show scary error text.
+                    // The expression might be incomplete (e.g. "= 2+"), which is normal.
                     ui.set_calc_mode(true);
                     ui.set_calc_expression(expr.into());
-                    ui.set_calc_result(format!("Error: {}", e).into());
-                    ui.set_calc_error(true);
+                    ui.set_calc_result("...".into());
+                    ui.set_calc_error(false);
                     ui.set_calc_raw_result("".into());
                 }
             }

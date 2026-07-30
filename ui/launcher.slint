@@ -253,9 +253,9 @@ export component LauncherWindow inherits Window {
                         visible: root.current_view == "main";
                         padding: 12px; spacing: 8px;
 
-                        // --- Search bar (alignment: center keeps all elements on one line) ---
+                        // --- Search bar (left-aligned) ---
                         HorizontalLayout {
-                            height: 40px; spacing: 12px; alignment: center;
+                            height: 40px; spacing: 12px;
 
                             Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
                             Rectangle {
@@ -284,20 +284,24 @@ export component LauncherWindow inherits Window {
                                     }
                                 }
                             }
-                            // Clear button — only visible when text is non-empty
+                            // Clear button — vertically centered in the search bar
                             Rectangle {
                                 width: search_input.text != "" ? 26px : 0px;
-                                height: 26px; border-radius: 13px;
-                                background: ta_clear.has-hover ? #3e4451 : transparent;
                                 animate width { duration: 100ms; }
-                                ta_clear := TouchArea {
-                                    width: 100%; height: 100%; mouse-cursor: pointer;
-                                    clicked => { root.clear_search(); }
-                                }
-                                Text {
-                                    text: "✕"; color: #5c6370;
-                                    font-size: 13px; width: 100%; height: 100%;
-                                    horizontal-alignment: center; vertical-alignment: center;
+                                VerticalLayout { alignment: center;
+                                    Rectangle {
+                                        width: 26px; height: 26px; border-radius: 13px;
+                                        background: ta_clear.has-hover ? #3e4451 : transparent;
+                                        ta_clear := TouchArea {
+                                            width: 100%; height: 100%; mouse-cursor: pointer;
+                                            clicked => { root.clear_search(); }
+                                        }
+                                        Text {
+                                            text: "✕"; color: #5c6370;
+                                            font-size: 13px; width: 100%; height: 100%;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                             Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "Calculator" : root.ribbon_text; }
