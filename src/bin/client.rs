@@ -3,6 +3,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -29,13 +30,11 @@ struct InitPayload {
 }
 
 /// Try to spawn the daemon if it's not running.
-/// Looks for the daemon binary next to the client binary.
 fn ensure_daemon_running(sock_path: &str) -> bool {
     if Path::new(sock_path).exists() {
         return true;
     }
 
-    // Find the daemon binary — same directory as the client binary
     let daemon_path = if let Ok(exe) = env::current_exe() {
         let mut d = exe.clone();
         d.pop();
@@ -50,14 +49,12 @@ fn ensure_daemon_running(sock_path: &str) -> bool {
 
     match std::process::Command::new(&daemon_path).spawn() {
         Ok(child) => {
-            // Give the daemon a moment to start listening
             for _ in 0..20 {
                 if Path::new(sock_path).exists() {
                     return true;
                 }
                 thread::sleep(Duration::from_millis(100));
             }
-            // Timed out, but the daemon might still be initializing
             eprintln!("[Client] Daemon started (pid {}), waiting...", child.id());
             thread::sleep(Duration::from_millis(500));
             Path::new(sock_path).exists()
@@ -69,8 +66,6 @@ fn ensure_daemon_running(sock_path: &str) -> bool {
     }
 }
 
-/// Copy a string to the Wayland clipboard using wl-copy.
-/// Silently does nothing if wl-copy isn't installed.
 fn copy_to_clipboard(text: &str) {
     let _ = std::process::Command::new("wl-copy")
         .arg(text)
@@ -82,9 +77,8 @@ fn copy_to_clipboard(text: &str) {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sock_path = socket_path();
 
-    // ---- Session restore: auto-start daemon if needed ----
     if !ensure_daemon_running(&sock_path) {
-        eprintln!("[Client] Daemon failed to start. Is it installed in ~/.cargo/bin/ or next to the client binary?");
+        eprintln!("[Client] Daemon failed to start.");
         std::process::exit(1);
     }
 
@@ -131,99 +125,72 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    // Shared state for calculator mode
-    let calc_result: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    // ---- Calculator mode state ----
+    let calc_active = Arc::new(AtomicBool::new(false));
+    let calc_active_search = calc_active.clone();
+    let calc_active_exec = calc_active.clone();
 
     let ui_handle_search = ui.as_weak();
     let matcher_search = Arc::clone(&matcher);
     let apps_search = Rc::clone(&apps_rc);
-    let calc_result_search = Arc::clone(&calc_result);
 
     ui.on_text_changed(move |query| {
         let ui = ui_handle_search.unwrap();
         let query_str = query.as_str();
         let trimmed = query_str.trim();
 
-        // ---- CALCULATOR MODE (prefix `=`) ----
+        // ---- CALCULATOR MODE ----
         if trimmed.starts_with('=') {
+            calc_active_search.store(true, Ordering::Relaxed);
             let expr = trimmed[1..].trim();
+
             if expr.is_empty() {
-                let calc_item = AppItem {
-                    text: "Type an expression...".into(),
-                    has_native_icon: false,
-                    native_icon: Image::default(),
-                    text_icon: "\u{f0ce}".into(), // calculator icon
-                };
-                ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(vec![calc_item]))));
-                ui.set_absolute_index(0);
-                ui.invoke_adjust_scroll();
-                ui.set_ribbon_text(SharedString::from("Calculator"));
-                // Clear any stored result
-                if let Ok(mut r) = calc_result_search.lock() {
-                    *r = None;
-                }
+                ui.set_calc_mode(true);
+                ui.set_calc_expression("".into());
+                ui.set_calc_result("...".into());
+                ui.set_calc_error(false);
+                ui.set_calc_raw_result("".into());
                 return;
             }
 
             let result = meval::eval_str(expr);
             match result {
                 Ok(val) => {
-                    // Format nicely: trim trailing zeros for floats
-                    let display = if val.fract() == 0.0 && val.is_finite() {
-                        format!("= {}", val as i64)
+                    let (display, raw) = if val.fract() == 0.0 && val.is_finite() {
+                        (format!("{}", val as i64), format!("{}", val as i64))
                     } else if val.is_finite() {
-                        format!("= {:.6}", val)
+                        let formatted = format!("{:.6}", val)
                             .trim_end_matches('0')
                             .trim_end_matches('.')
-                            .to_string()
+                            .to_string();
+                        (formatted.clone(), format!("{}", val))
                     } else if val.is_infinite() {
-                        "= Infinity".to_string()
+                        ("Infinity".to_string(), String::new())
                     } else {
-                        "= undefined".to_string()
+                        ("undefined".to_string(), String::new())
                     };
-                    // Store the raw value for clipboard copy
-                    let raw = if val.fract() == 0.0 && val.is_finite() {
-                        format!("{}", val as i64)
-                    } else if val.is_finite() {
-                        format!("{}", val)
-                    } else {
-                        String::new()
-                    };
-                    if let Ok(mut r) = calc_result_search.lock() {
-                        *r = Some(raw);
-                    }
-                    let calc_item = AppItem {
-                        text: display.clone().into(),
-                        has_native_icon: false,
-                        native_icon: Image::default(),
-                        text_icon: "\u{f0ce}".into(),
-                    };
-                    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(vec![calc_item]))));
-                    ui.set_absolute_index(0);
-                    ui.invoke_adjust_scroll();
-                    ui.set_ribbon_text(SharedString::from("Enter to copy"));
+
+                    ui.set_calc_mode(true);
+                    ui.set_calc_expression(expr.into());
+                    ui.set_calc_result(display.into());
+                    ui.set_calc_error(false);
+                    ui.set_calc_raw_result(raw.into());
                 }
                 Err(e) => {
-                    let err_msg = format!("Error: {}", e);
-                    if let Ok(mut r) = calc_result_search.lock() {
-                        *r = None;
-                    }
-                    let calc_item = AppItem {
-                        text: err_msg.into(),
-                        has_native_icon: false,
-                        native_icon: Image::default(),
-                        text_icon: "\u{f0ce}".into(),
-                    };
-                    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(vec![calc_item]))));
-                    ui.set_absolute_index(0);
-                    ui.invoke_adjust_scroll();
-                    ui.set_ribbon_text(SharedString::from("Calculator"));
+                    ui.set_calc_mode(true);
+                    ui.set_calc_expression(expr.into());
+                    ui.set_calc_result(format!("Error: {}", e).into());
+                    ui.set_calc_error(true);
+                    ui.set_calc_raw_result("".into());
                 }
             }
             return;
         }
 
         // ---- NORMAL FUZZY SEARCH ----
+        calc_active_search.store(false, Ordering::Relaxed);
+        ui.set_calc_mode(false);
+
         if trimmed.is_empty() {
             ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(
                 (*apps_search).clone(),
@@ -258,19 +225,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clone BEFORE tx_exec gets moved into the execute_selected closure
     let tx_power = tx_exec.clone();
 
-    // Calculator result for execute handler
-    let calc_result_exec = Arc::clone(&calc_result);
-
+    let ui_exec = ui.as_weak();
     ui.on_execute_selected(move |selected, _is_shift| {
-        // Check if we're in calculator mode
-        let stored = calc_result_exec.lock().ok().and_then(|r| r.clone());
-        if let Some(val) = stored {
-            if !val.is_empty() {
-                copy_to_clipboard(&val);
-                eprintln!("[Client] Copied {} to clipboard", val);
+        let ui = ui_exec.unwrap();
+
+        // Calculator mode: copy result to clipboard
+        if calc_active_exec.load(Ordering::Relaxed) {
+            let raw = ui.get_calc_raw_result();
+            if !raw.is_empty() {
+                copy_to_clipboard(raw.as_str());
             }
             std::process::exit(0);
         }
+
+        // Normal mode: execute app
         let _ = tx_exec.send(format!("EXEC_APP:{}", selected.as_str()));
         std::process::exit(0);
     });
@@ -280,7 +248,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_clear_search(move || {
         let ui = ui_clear.unwrap();
         ui.set_search_text("".into());
-        // The text_changed callback will fire from edited signal
     });
 
     let ui_handle_high = ui.as_weak();

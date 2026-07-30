@@ -114,6 +114,13 @@ export component LauncherWindow inherits Window {
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
 
+    // Calculator mode
+    in property <bool> calc_mode: false;
+    in property <string> calc_expression: "";
+    in property <string> calc_result: "";
+    in property <bool> calc_error: false;
+    in property <string> calc_raw_result: "";
+
     // Power view keyboard navigation
     in-out property <int> power_index: 0;
 
@@ -179,6 +186,17 @@ export component LauncherWindow inherits Window {
                     else if (root.power_index == 3) { root.power_action("reboot"); }
                     return accept;
                 }
+                return reject;
+            }
+
+            // ---- CALCULATOR MODE KEYS ----
+            if (root.calc_mode) {
+                if (event.text == Key.Escape) { root.close_requested(); return accept; }
+                if (event.text == Key.Return) {
+                    if (root.calc_result != "") { root.execute_selected(root.calc_result, false); }
+                    return accept;
+                }
+                // Allow normal text input to pass through to search_input
                 return reject;
             }
 
@@ -282,21 +300,26 @@ export component LauncherWindow inherits Window {
                                     horizontal-alignment: center; vertical-alignment: center;
                                 }
                             }
-                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.ribbon_text; }
+                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "Calculator" : root.ribbon_text; }
                         }
 
-                        // --- App list ---
-                        HorizontalLayout {
-                            vertical-stretch: 1; spacing: 12px;
-                            list_container := Rectangle {
-                                horizontal-stretch: 1; clip: true; border-radius: 12px; background: transparent;
+                        // --- Content area: App list OR Calculator display ---
+                        Rectangle {
+                            vertical-stretch: 1;
+                            clip: true;
+
+                            // ===== APP LIST (visible when not in calc mode) =====
+                            Rectangle {
+                                visible: !root.calc_mode;
+                                width: 100%; height: 100%;
+
                                 list_flickable := Flickable {
                                     width: 100%; height: 100%; interactive: true; viewport-height: inner_layout.preferred-height;
                                     inner_layout := VerticalLayout {
-                                        width: list_container.width; alignment: start;
+                                        width: parent.width; alignment: start;
 
                                         for item[index] in root.display_items: Rectangle {
-                                            height: root.item_height; width: list_container.width;
+                                            height: root.item_height; width: parent.width;
 
                                             pill := Rectangle {
                                                 width: item_ta.pressed ? parent.width - 8px : parent.width - 4px;
@@ -352,6 +375,47 @@ export component LauncherWindow inherits Window {
                                                 clicked => { root.absolute_index = index; root.execute_selected(item.text, false); }
                                             }
                                         }
+                                    }
+                                }
+                            }
+
+                            // ===== CALCULATOR DISPLAY (visible when in calc mode) =====
+                            Rectangle {
+                                visible: root.calc_mode;
+                                width: 100%; height: 100%;
+
+                                VerticalLayout {
+                                    width: 100%; height: 100%;
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    // --- Expression (dim, small) ---
+                                    Text {
+                                        text: root.calc_expression;
+                                        color: #5c6370;
+                                        font-size: 18px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: bottom;
+                                    }
+
+                                    // --- Result (huge, bold) ---
+                                    Text {
+                                        text: root.calc_result == "" ? "..." : root.calc_result;
+                                        color: root.calc_error ? #e06c75 : #ffffff;
+                                        font-size: 64px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+
+                                    // --- Hint ---
+                                    Text {
+                                        text: root.calc_result == "" ? "" : "Enter to copy  ·  Esc to close";
+                                        color: #5c6370;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: top;
                                     }
                                 }
                             }
