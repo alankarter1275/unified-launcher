@@ -226,7 +226,9 @@ export component LauncherWindow inherits Window {
                 VerticalLayout {
                     width: 54px; alignment: center; padding-top: 12px; padding-bottom: 12px;
 
-                    VerticalLayout { spacing: 12px;
+                    VerticalLayout {
+                        spacing: 12px;
+
                         SidebarButton { icon: "󰈹"; clicked => { root.sidebar_action(1); } }
                         SidebarButton { icon: ""; clicked => { root.sidebar_action(2); } }
                         SidebarButton { icon: "󰟒"; clicked => { root.sidebar_action(3); } }
@@ -251,23 +253,17 @@ export component LauncherWindow inherits Window {
                         visible: root.current_view == "main";
                         padding: 12px; spacing: 8px;
 
-                        // --- Search bar (all elements vertically centered in one line) ---
+                        // --- Search bar (alignment: center keeps all elements on one line) ---
                         HorizontalLayout {
-                            height: 40px; spacing: 8px; alignment: center;
+                            height: 40px; spacing: 12px; alignment: center;
 
-                            Text {
-                                text: ""; color: #61afef;
-                                font-family: root.icon_font; font-size: 18px;
-                                vertical-alignment: center;
-                            }
-
+                            Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
                             Rectangle {
                                 horizontal-stretch: 1;
                                 Text {
                                     width: 100%; height: 100%; vertical-alignment: center;
                                     horizontal-alignment: left; font-size: 18px;
-                                    color: #5c6370;
-                                    text: search_input.text == "" ? (root.calc_mode ? "Type an expression..." : "Search apps...") : "";
+                                    color: #5c6370; text: search_input.text == "" ? (root.calc_mode ? "Type an expression..." : "Search apps...") : "";
                                 }
                                 search_input := TextInput {
                                     width: 100%; height: 100%; vertical-alignment: center;
@@ -288,15 +284,12 @@ export component LauncherWindow inherits Window {
                                     }
                                 }
                             }
-
-                            // Clear button (fades in/out)
+                            // Clear button — only visible when text is non-empty
                             Rectangle {
                                 width: search_input.text != "" ? 26px : 0px;
-                                height: 26px;
-                                border-radius: 13px;
+                                height: 26px; border-radius: 13px;
                                 background: ta_clear.has-hover ? #3e4451 : transparent;
-                                animate width { duration: 120ms; easing: ease-out; }
-
+                                animate width { duration: 100ms; }
                                 ta_clear := TouchArea {
                                     width: 100%; height: 100%; mouse-cursor: pointer;
                                     clicked => { root.clear_search(); }
@@ -307,42 +300,79 @@ export component LauncherWindow inherits Window {
                                     horizontal-alignment: center; vertical-alignment: center;
                                 }
                             }
-
-                            Text {
-                                text: root.calc_mode ? "Calculator" : root.ribbon_text;
-                                color: #5c6370; font-size: 13px; font-weight: 600;
-                                vertical-alignment: center;
-                            }
+                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "Calculator" : root.ribbon_text; }
                         }
 
-                        // --- Content area: App list (normal) OR Calculator display ---
+                        // --- Content area: App list or Calculator ---
                         Rectangle { vertical-stretch: 1; clip: true;
 
-                            // APP LIST
+                            // ===== APP LIST (original design, unchanged) =====
                             Rectangle {
                                 visible: !root.calc_mode;
                                 width: 100%; height: 100%;
-                                list_flickable := Flickable {
-                                    width: 100%; height: 100%; interactive: true;
-                                    viewport-height: inner_layout.preferred-height;
-                                    inner_layout := VerticalLayout {
-                                        width: parent.width; alignment: start;
-                                        for item[index] in root.display_items: Rectangle {
-                                            height: root.item_height; width: parent.width;
-                                            TouchArea {
-                                                width: 100%; height: 100%; mouse-cursor: pointer;
-                                                clicked => { root.absolute_index = index; root.execute_selected(item.text, false); }
-                                            }
-                                            Rectangle {
-                                                border-radius: 8px;
-                                                background: index == root.absolute_index ? #2c323c : transparent;
-                                                HorizontalLayout {
-                                                    padding-left: 12px; spacing: 12px; alignment: center;
-                                                    Rectangle { width: 24px; height: 24px;
-                                                        if item.has_native_icon: Image { source: item.native_icon; width: 24px; height: 24px; image-fit: contain; }
-                                                        if !item.has_native_icon: Text { text: item.text_icon; font-family: root.icon_font; color: index == root.absolute_index ? #61afef : #abb2bf; font-size: 20px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+
+                                list_container := Rectangle {
+                                    width: 100%; height: 100%; clip: true; border-radius: 12px; background: transparent;
+                                    list_flickable := Flickable {
+                                        width: 100%; height: 100%; interactive: true; viewport-height: inner_layout.preferred-height;
+                                        inner_layout := VerticalLayout {
+                                            width: list_container.width; alignment: start;
+
+                                            for item[index] in root.display_items: Rectangle {
+                                                height: root.item_height; width: list_container.width;
+
+                                                pill := Rectangle {
+                                                    width: item_ta.pressed ? parent.width - 8px : parent.width - 4px;
+                                                    height: item_ta.pressed ? 36px : 40px;
+                                                    border-radius: 20px;
+                                                    background: transparent;
+                                                    animate width { duration: 100ms; easing: ease-out; }
+                                                    animate height { duration: 100ms; easing: ease-out; }
+
+                                                    indicator := Rectangle {
+                                                        x: 4px;
+                                                        y: (parent.height - 16px) / 2;
+                                                        width: 4px; height: 16px; border-radius: 2px;
+                                                        background: transparent;
                                                     }
-                                                    Text { text: item.text; color: index == root.absolute_index ? #ffffff : #abb2bf; font-size: 15px; font-weight: 600; vertical-alignment: center; overflow: elide; }
+
+                                                    states [
+                                                        active when index == root.absolute_index: {
+                                                            background: #2c323c;
+                                                            indicator.x: 12px;
+                                                            indicator.background: #61afef;
+                                                            in {
+                                                                animate background { duration: 150ms; }
+                                                                animate indicator.x { duration: 250ms; easing: ease-out-bounce; }
+                                                                animate indicator.background { duration: 150ms; }
+                                                            }
+                                                            out {
+                                                                animate background { duration: 0ms; }
+                                                                animate indicator.x { duration: 0ms; }
+                                                                animate indicator.background { duration: 0ms; }
+                                                            }
+                                                        }
+                                                        hover when item_ta.has-hover && index != root.absolute_index: {
+                                                            background: #252931;
+                                                            in { animate background { duration: 100ms; } }
+                                                            out { animate background { duration: 150ms; } }
+                                                        }
+                                                    ]
+
+                                                    HorizontalLayout {
+                                                        padding-left: 28px; spacing: 16px;
+                                                        Rectangle {
+                                                            width: 24px; height: parent.height;
+                                                            if item.has_native_icon: Image { source: item.native_icon; width: 24px; height: 24px; image-fit: contain; }
+                                                            if !item.has_native_icon: Text { text: item.text_icon; font-family: root.icon_font; color: index == root.absolute_index ? #61afef : #abb2bf; font-size: 20px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                                                        }
+                                                        Text { text: item.text; color: index == root.absolute_index ? #ffffff : #abb2bf; font-size: 15px; font-weight: 600; height: parent.height; vertical-alignment: center; overflow: elide; }
+                                                    }
+                                                }
+
+                                                item_ta := TouchArea {
+                                                    width: 100%; height: 100%; mouse-cursor: pointer;
+                                                    clicked => { root.absolute_index = index; root.execute_selected(item.text, false); }
                                                 }
                                             }
                                         }
@@ -350,29 +380,41 @@ export component LauncherWindow inherits Window {
                                 }
                             }
 
-                            // CALCULATOR DISPLAY
+                            // ===== CALCULATOR DISPLAY =====
                             Rectangle {
                                 visible: root.calc_mode;
                                 width: 100%; height: 100%;
+
                                 VerticalLayout {
                                     width: 100%; height: 100%;
-                                    alignment: center; spacing: 4px;
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    // Expression (dim, small)
                                     Text {
                                         text: root.calc_expression;
-                                        color: #5c6370; font-size: 18px;
+                                        color: #5c6370;
+                                        font-size: 18px;
                                         horizontal-alignment: center;
                                         vertical-alignment: bottom;
                                     }
+
+                                    // Result (huge, bold)
                                     Text {
                                         text: root.calc_result == "" ? "..." : root.calc_result;
                                         color: root.calc_error ? #e06c75 : #ffffff;
-                                        font-size: 64px; font-weight: 700;
+                                        font-size: 64px;
+                                        font-weight: 700;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
+
+                                    // Hint
                                     Text {
                                         text: root.calc_result == "" ? "" : "Enter to copy  ·  Esc to close";
-                                        color: #5c6370; font-size: 13px; font-weight: 600;
+                                        color: #5c6370;
+                                        font-size: 13px;
+                                        font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: top;
                                     }
