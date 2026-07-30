@@ -257,17 +257,21 @@ export component LauncherWindow inherits Window {
                         HorizontalLayout {
                             height: 40px; spacing: 12px;
 
-                            // Arrow prompt (normal) or Calc capsule (calc mode)
+                            // Always shows > arrow
+                            Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
+
+                            // Calc pill — replaces the `=` visually, only in calc mode
                             Rectangle {
-                                border-radius: root.calc_mode ? 12px : 0px;
-                                width: root.calc_mode ? 50px : 24px;
-                                background: root.calc_mode ? #2d3a5c : transparent;
+                                visible: root.calc_mode;
+                                border-radius: 12px;
+                                width: 50px;
+                                background: #2d3a5c;
                                 VerticalLayout { alignment: center;
                                     Text {
-                                        text: root.calc_mode ? "Calc" : "";
-                                        color: root.calc_mode ? #abb2bf : #61afef;
+                                        text: "Calc";
+                                        color: #abb2bf;
                                         font-family: root.icon_font;
-                                        font-size: 18px;
+                                        font-size: 14px;
                                         font-weight: 600;
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
@@ -279,7 +283,7 @@ export component LauncherWindow inherits Window {
                                 Text {
                                     width: 100%; height: 100%; vertical-alignment: center;
                                     horizontal-alignment: left; font-size: 18px;
-                                    color: #5c6370; text: search_input.text == "" ? (root.calc_mode ? "Type an expression..." : "Search apps...") : "";
+                                    color: #5c6370; text: search_input.text == "" ? "Search apps..." : "";
                                 }
                                 search_input := TextInput {
                                     width: 100%; height: 100%; vertical-alignment: center;
