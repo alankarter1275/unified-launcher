@@ -284,31 +284,35 @@ export component LauncherWindow inherits Window {
                                     }
                                 }
                             }
-                            // Clear button — only visible when search text is non-empty
+
+                            // Clear button — fills full 40px height, circle centered inside it
                             Rectangle {
                                 visible: search_input.text != "";
                                 width: 26px;
-                                height: 26px; border-radius: 13px;
-                                background: ta_clear.has-hover ? #3e4451 : transparent;
                                 VerticalLayout { alignment: center;
-                                    ta_clear := TouchArea {
-                                        width: 100%; height: 100%; mouse-cursor: pointer;
-                                        clicked => { root.clear_search(); }
-                                    }
-                                    Text {
-                                        text: "✕"; color: #5c6370;
-                                        font-size: 13px; width: 100%; height: 100%;
-                                        horizontal-alignment: center; vertical-alignment: center;
+                                    Rectangle {
+                                        width: 26px; height: 26px; border-radius: 13px;
+                                        background: ta_clear.has-hover ? #3e4451 : transparent;
+                                        ta_clear := TouchArea {
+                                            width: 100%; height: 100%; mouse-cursor: pointer;
+                                            clicked => { root.clear_search(); }
+                                        }
+                                        Text {
+                                            text: "✕"; color: #5c6370;
+                                            font-size: 13px; width: 100%; height: 100%;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                        }
                                     }
                                 }
                             }
+
                             Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "Calculator" : root.ribbon_text; }
                         }
 
                         // --- Content area: App list or Calculator ---
                         Rectangle { vertical-stretch: 1; clip: true;
 
-                            // ===== APP LIST (original design, unchanged) =====
+                            // ===== APP LIST =====
                             Rectangle {
                                 visible: !root.calc_mode;
                                 width: 100%; height: 100%;
@@ -392,7 +396,6 @@ export component LauncherWindow inherits Window {
                                     alignment: center;
                                     spacing: 4px;
 
-                                    // Expression (dim, small)
                                     Text {
                                         text: root.calc_expression;
                                         color: #5c6370;
@@ -400,8 +403,6 @@ export component LauncherWindow inherits Window {
                                         horizontal-alignment: center;
                                         vertical-alignment: bottom;
                                     }
-
-                                    // Result (huge, bold)
                                     Text {
                                         text: root.calc_result == "" ? "..." : root.calc_result;
                                         color: root.calc_error ? #e06c75 : #ffffff;
@@ -410,8 +411,6 @@ export component LauncherWindow inherits Window {
                                         horizontal-alignment: center;
                                         vertical-alignment: center;
                                     }
-
-                                    // Hint
                                     Text {
                                         text: root.calc_result == "" ? "" : "Enter to copy  ·  Esc to close";
                                         color: #5c6370;
