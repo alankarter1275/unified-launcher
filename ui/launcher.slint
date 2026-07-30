@@ -260,24 +260,7 @@ export component LauncherWindow inherits Window {
                             // Always shows > arrow
                             Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
 
-                            // Calc pill — replaces the `=` visually, only in calc mode
-                            Rectangle {
-                                visible: root.calc_mode;
-                                border-radius: 12px;
-                                width: 50px;
-                                background: #2d3a5c;
-                                VerticalLayout { alignment: center;
-                                    Text {
-                                        text: "Calc";
-                                        color: #abb2bf;
-                                        font-family: root.icon_font;
-                                        font-size: 14px;
-                                        font-weight: 600;
-                                        horizontal-alignment: center;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
+
                             Rectangle {
                                 horizontal-stretch: 1;
                                 Text {
@@ -326,7 +309,7 @@ export component LauncherWindow inherits Window {
                                 }
                             }
 
-                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.ribbon_text; }
+                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "CALC" : root.ribbon_text; }
                         }
 
                         // --- Content area: App list or Calculator ---

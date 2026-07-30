@@ -139,13 +139,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let query_str = query.as_str();
         let trimmed = query_str.trim();
 
-        // ---- CALCULATOR MODE ----
+        // ---- CALCULATOR MODE (when search starts with =) ----
         if trimmed.starts_with('=') {
             calc_active_search.store(true, Ordering::Relaxed);
+            ui.set_calc_mode(true);
             let expr = trimmed[1..].trim();
 
             if expr.is_empty() {
-                ui.set_calc_mode(true);
                 ui.set_calc_expression("".into());
                 ui.set_calc_result("...".into());
                 ui.set_calc_error(false);
@@ -169,17 +169,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     } else {
                         ("undefined".to_string(), String::new())
                     };
-
-                    ui.set_calc_mode(true);
                     ui.set_calc_expression(expr.into());
                     ui.set_calc_result(display.into());
                     ui.set_calc_error(false);
                     ui.set_calc_raw_result(raw.into());
                 }
                 Err(_e) => {
-                    // Just show "..." — don't show scary error text.
-                    // The expression might be incomplete (e.g. "= 2+"), which is normal.
-                    ui.set_calc_mode(true);
                     ui.set_calc_expression(expr.into());
                     ui.set_calc_result("...".into());
                     ui.set_calc_error(false);
