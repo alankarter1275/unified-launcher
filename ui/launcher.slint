@@ -282,7 +282,7 @@ export component LauncherWindow inherits Window {
                                         if (event.text == Key.DownArrow) { if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); } return accept; }
                                         if (event.text == Key.UpArrow) { if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); } return accept; }
                                         if (event.text == Key.Return) { if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].text, event.modifiers.shift); } return accept; }
-                                        if (event.text == Key.Escape) { return accept; }
+                                        if (event.text == Key.Escape) { root.close_requested(); return accept; }
                                         return reject;
                                     }
                                 }
