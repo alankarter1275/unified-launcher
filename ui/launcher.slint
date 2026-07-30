@@ -309,7 +309,19 @@ export component LauncherWindow inherits Window {
                                 }
                             }
 
-                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "CALC" : root.ribbon_text; }
+                            // Ribbon label — pill-shaped CALC badge in calc mode, plain text otherwise
+                            Rectangle {
+                                border-radius: root.calc_mode ? 12px : 0px;
+                                background: root.calc_mode ? #2c323c : transparent;
+                                VerticalLayout { alignment: center; padding-left: root.calc_mode ? 10px : 0px; padding-right: root.calc_mode ? 10px : 0px;
+                                    Text {
+                                        text: root.calc_mode ? "CALC" : root.ribbon_text;
+                                        color: root.calc_mode ? #abb2bf : #5c6370;
+                                        font-size: 13px; font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
                         }
 
                         // --- Content area: App list or Calculator ---
