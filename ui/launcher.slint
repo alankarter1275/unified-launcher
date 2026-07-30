@@ -306,7 +306,18 @@ export component LauncherWindow inherits Window {
                                 }
                             }
 
-                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.calc_mode ? "Calculator" : root.ribbon_text; }
+                            Rectangle {
+                                border-radius: root.calc_mode ? 10px : 0px;
+                                background: root.calc_mode ? #61afef : transparent;
+                                VerticalLayout { alignment: center; padding-left: root.calc_mode ? 8px : 0px; padding-right: root.calc_mode ? 8px : 0px;
+                                    Text {
+                                        text: root.calc_mode ? "Calc" : root.ribbon_text;
+                                        color: root.calc_mode ? #ffffff : #5c6370;
+                                        font-size: 13px; font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
                         }
 
                         // --- Content area: App list or Calculator ---

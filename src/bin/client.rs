@@ -247,9 +247,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Clear search button handler
     let ui_clear = ui.as_weak();
+    let apps_clear = Rc::clone(&apps_rc);
     ui.on_clear_search(move || {
         let ui = ui_clear.unwrap();
-        ui.set_search_text("".into());
+        if ui.get_calc_mode() {
+            // In calc mode: clear the expression but stay in calc mode
+            ui.set_search_text("=".into());
+            ui.set_calc_expression("".into());
+            ui.set_calc_result("...".into());
+            ui.set_calc_error(false);
+            ui.set_calc_raw_result("".into());
+        } else {
+            // Normal mode: clear search and reset app list
+            ui.set_search_text("".into());
+            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(
+                (*apps_clear).clone(),
+            ))));
+            ui.set_absolute_index(0);
+            ui.invoke_adjust_scroll();
+            ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps_clear.len())));
+        }
     });
 
     let ui_handle_high = ui.as_weak();
