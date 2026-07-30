@@ -257,7 +257,23 @@ export component LauncherWindow inherits Window {
                         HorizontalLayout {
                             height: 40px; spacing: 12px;
 
-                            Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
+                            // Arrow prompt (normal) or Calc capsule (calc mode)
+                            Rectangle {
+                                border-radius: root.calc_mode ? 12px : 0px;
+                                width: root.calc_mode ? 50px : 24px;
+                                background: root.calc_mode ? #2d3a5c : transparent;
+                                VerticalLayout { alignment: center;
+                                    Text {
+                                        text: root.calc_mode ? "Calc" : "";
+                                        color: root.calc_mode ? #abb2bf : #61afef;
+                                        font-family: root.icon_font;
+                                        font-size: 18px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
                             Rectangle {
                                 horizontal-stretch: 1;
                                 Text {
@@ -306,18 +322,7 @@ export component LauncherWindow inherits Window {
                                 }
                             }
 
-                            Rectangle {
-                                border-radius: root.calc_mode ? 10px : 0px;
-                                background: root.calc_mode ? #61afef : transparent;
-                                VerticalLayout { alignment: center; padding-left: root.calc_mode ? 8px : 0px; padding-right: root.calc_mode ? 8px : 0px;
-                                    Text {
-                                        text: root.calc_mode ? "Calc" : root.ribbon_text;
-                                        color: root.calc_mode ? #ffffff : #5c6370;
-                                        font-size: 13px; font-weight: 600;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
+                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.ribbon_text; }
                         }
 
                         // --- Content area: App list or Calculator ---
