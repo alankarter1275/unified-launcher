@@ -11,7 +11,7 @@ use std::time::Duration;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use serde::Deserialize;
-use slint::{Image, Model, ModelRc, SharedString, VecModel};
+use slint::{Image, ModelRc, SharedString, VecModel};
 
 use unified_launcher::types::socket_path;
 
@@ -80,7 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ui = LauncherWindow::new()?;
     let matcher = Arc::new(SkimMatcherV2::default());
 
-    let mut stream = UnixStream::connect(&sock_path)
+    let stream = UnixStream::connect(&sock_path)
         .unwrap_or_else(|_| panic!("[Client] Could not connect to daemon at {}", sock_path));
 
     let mut reader = BufReader::new(stream.try_clone()?);
