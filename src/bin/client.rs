@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use meval;
 use serde::Deserialize;
 use slint::{Image, ModelRc, SharedString, VecModel};
 
@@ -68,6 +69,16 @@ fn ensure_daemon_running(sock_path: &str) -> bool {
     }
 }
 
+/// Copy a string to the Wayland clipboard using wl-copy.
+/// Silently does nothing if wl-copy isn't installed.
+fn copy_to_clipboard(text: &str) {
+    let _ = std::process::Command::new("wl-copy")
+        .arg(text)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let sock_path = socket_path();
 
@@ -120,15 +131,100 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
+    // Shared state for calculator mode
+    let calc_result: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+
     let ui_handle_search = ui.as_weak();
     let matcher_search = Arc::clone(&matcher);
     let apps_search = Rc::clone(&apps_rc);
+    let calc_result_search = Arc::clone(&calc_result);
 
     ui.on_text_changed(move |query| {
         let ui = ui_handle_search.unwrap();
         let query_str = query.as_str();
+        let trimmed = query_str.trim();
 
-        if query_str.trim().is_empty() {
+        // ---- CALCULATOR MODE (prefix `=`) ----
+        if trimmed.starts_with('=') {
+            let expr = trimmed[1..].trim();
+            if expr.is_empty() {
+                let calc_item = AppItem {
+                    text: "Type an expression...".into(),
+                    has_native_icon: false,
+                    native_icon: Image::default(),
+                    text_icon: "\u{f0ce}".into(), // calculator icon
+                };
+                ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(vec![calc_item]))));
+                ui.set_absolute_index(0);
+                ui.invoke_adjust_scroll();
+                ui.set_ribbon_text(SharedString::from("Calculator"));
+                // Clear any stored result
+                if let Ok(mut r) = calc_result_search.lock() {
+                    *r = None;
+                }
+                return;
+            }
+
+            let result = meval::eval_str(expr);
+            match result {
+                Ok(val) => {
+                    // Format nicely: trim trailing zeros for floats
+                    let display = if val.fract() == 0.0 && val.is_finite() {
+                        format!("= {}", val as i64)
+                    } else if val.is_finite() {
+                        format!("= {:.6}", val)
+                            .trim_end_matches('0')
+                            .trim_end_matches('.')
+                            .to_string()
+                    } else if val.is_infinite() {
+                        "= Infinity".to_string()
+                    } else {
+                        "= undefined".to_string()
+                    };
+                    // Store the raw value for clipboard copy
+                    let raw = if val.fract() == 0.0 && val.is_finite() {
+                        format!("{}", val as i64)
+                    } else if val.is_finite() {
+                        format!("{}", val)
+                    } else {
+                        String::new()
+                    };
+                    if let Ok(mut r) = calc_result_search.lock() {
+                        *r = Some(raw);
+                    }
+                    let calc_item = AppItem {
+                        text: display.clone().into(),
+                        has_native_icon: false,
+                        native_icon: Image::default(),
+                        text_icon: "\u{f0ce}".into(),
+                    };
+                    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(vec![calc_item]))));
+                    ui.set_absolute_index(0);
+                    ui.invoke_adjust_scroll();
+                    ui.set_ribbon_text(SharedString::from("Enter to copy"));
+                }
+                Err(e) => {
+                    let err_msg = format!("Error: {}", e);
+                    if let Ok(mut r) = calc_result_search.lock() {
+                        *r = None;
+                    }
+                    let calc_item = AppItem {
+                        text: err_msg.into(),
+                        has_native_icon: false,
+                        native_icon: Image::default(),
+                        text_icon: "\u{f0ce}".into(),
+                    };
+                    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(vec![calc_item]))));
+                    ui.set_absolute_index(0);
+                    ui.invoke_adjust_scroll();
+                    ui.set_ribbon_text(SharedString::from("Calculator"));
+                }
+            }
+            return;
+        }
+
+        // ---- NORMAL FUZZY SEARCH ----
+        if trimmed.is_empty() {
             ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(
                 (*apps_search).clone(),
             ))));
@@ -138,7 +234,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             let mut scored_apps = Vec::new();
             for app in apps_search.iter() {
-                if let Some(score) = matcher_search.fuzzy_match(app.text.as_str(), query_str) {
+                if let Some(score) = matcher_search.fuzzy_match(app.text.as_str(), trimmed) {
                     scored_apps.push((score, app.clone()));
                 }
             }
@@ -162,7 +258,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clone BEFORE tx_exec gets moved into the execute_selected closure
     let tx_power = tx_exec.clone();
 
+    // Calculator result for execute handler
+    let calc_result_exec = Arc::clone(&calc_result);
+
     ui.on_execute_selected(move |selected, _is_shift| {
+        // Check if we're in calculator mode
+        let stored = calc_result_exec.lock().ok().and_then(|r| r.clone());
+        if let Some(val) = stored {
+            if !val.is_empty() {
+                copy_to_clipboard(&val);
+                eprintln!("[Client] Copied {} to clipboard", val);
+            }
+            std::process::exit(0);
+        }
         let _ = tx_exec.send(format!("EXEC_APP:{}", selected.as_str()));
         std::process::exit(0);
     });
