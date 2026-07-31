@@ -20,7 +20,6 @@ component SidebarButton inherits Rectangle {
     private property <string> icon_font: "JetBrainsMono Nerd Font Propo";
 
     bg := Rectangle {
-        // The Squish Physics: shrinks deeper now to emphasize the spring
         width: ta.pressed ? 36px : 46px;
         height: ta.pressed ? 36px : 46px;
         border-radius: self.width / 2;
@@ -39,21 +38,17 @@ component SidebarButton inherits Rectangle {
             }
         ]
 
-        // Custom spring physics curve for the background
         animate width, height { duration: 250ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
 
         Text {
             text: root.icon;
             color: root.icon_color;
             font-family: root.icon_font;
-            // The icon physically shrinks down to 18px when pressed
             font-size: ta.pressed ? 18px : 24px;
             font-weight: root.is_active ? 700 : 400;
             horizontal-alignment: center;
             vertical-alignment: center;
             width: 100%; height: 100%;
-
-            // Matches the background spring physics perfectly
             animate font-size { duration: 250ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
         }
     }
@@ -66,11 +61,49 @@ component SidebarButton inherits Rectangle {
 }
 
 // --------------------------------------------------------
+// POWER GRID BUTTON
+// --------------------------------------------------------
+component PowerButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <color> bg: #3e4451;
+    in property <color> icon_color: #abb2bf;
+    in property <bool> is_focused: false;
+    callback clicked;
+
+    background: root.is_focused ? #2c323c : transparent;
+    border-radius: 24px;
+
+    ta := TouchArea {
+        width: 100%; height: 100%; mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    Rectangle {
+        width: 100%; height: 100%;
+        border-radius: 24px;
+        background: root.bg;
+        VerticalLayout {
+            alignment: center; spacing: 12px;
+            Text {
+                text: root.icon; color: root.icon_color;
+                font-family: "JetBrainsMono Nerd Font Propo";
+                font-size: 40px; horizontal-alignment: center;
+            }
+            Text {
+                text: root.label; color: root.is_focused ? #ffffff : #abb2bf;
+                font-size: 14px; font-weight: 600; horizontal-alignment: center;
+            }
+        }
+    }
+}
+
+// --------------------------------------------------------
 // MAIN WINDOW
 // --------------------------------------------------------
 export component LauncherWindow inherits Window {
     width: 640px;
-    height: 420px;
+    height: 440px;
     background: transparent;
     no-frame: true;
     always-on-top: true;
@@ -81,13 +114,26 @@ export component LauncherWindow inherits Window {
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
 
+    // Calculator mode
+    in property <bool> calc_mode: false;
+    in property <string> calc_expression: "";
+    in property <string> calc_result: "";
+    in property <bool> calc_error: false;
+    in property <string> calc_raw_result: "";
+
+    // Power view keyboard navigation
+    in-out property <int> power_index: 0;
+
     property <length> item_height: 44px;
     property <string> icon_font: "JetBrainsMono Nerd Font Propo";
 
     callback text_changed(string);
+    callback clear_search();
     callback execute_selected(string, bool);
     callback item_highlighted(int, int, string);
     callback sidebar_action(int);
+    callback power_action(string);
+    callback close_requested();
 
     public function focus_search() { search_input.focus(); }
     init => { root.focus_search(); }
@@ -110,7 +156,51 @@ export component LauncherWindow inherits Window {
 
     FocusScope {
         key-pressed(event) => {
-            if (event.text == Key.Escape) { return accept; }
+            // ---- POWER VIEW KEYS ----
+            if (root.current_view == "power") {
+                if (event.text == Key.Escape) {
+                    root.current_view = "main";
+                    root.focus_search();
+                    return accept;
+                }
+                if (event.text == Key.LeftArrow) {
+                    if (root.power_index > 0) { root.power_index -= 1; }
+                    return accept;
+                }
+                if (event.text == Key.RightArrow) {
+                    if (root.power_index < 3) { root.power_index += 1; }
+                    return accept;
+                }
+                if (event.text == Key.UpArrow) {
+                    if (root.power_index >= 2) { root.power_index -= 2; }
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    if (root.power_index <= 1) { root.power_index += 2; }
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    if (root.power_index == 0) { root.power_action("lock"); }
+                    else if (root.power_index == 1) { root.power_action("shutdown"); }
+                    else if (root.power_index == 2) { root.power_action("logout"); }
+                    else if (root.power_index == 3) { root.power_action("reboot"); }
+                    return accept;
+                }
+                return reject;
+            }
+
+            // ---- CALCULATOR MODE KEYS ----
+            if (root.calc_mode) {
+                if (event.text == Key.Escape) { root.close_requested(); return accept; }
+                if (event.text == Key.Return) {
+                    if (root.calc_result != "") { root.execute_selected(root.calc_result, false); }
+                    return accept;
+                }
+                return reject;
+            }
+
+            // ---- MAIN VIEW KEYS ----
+            if (event.text == Key.Escape) { root.close_requested(); return accept; }
             if (event.text == Key.Return) {
                 if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].text, event.modifiers.shift); }
                 return accept;
@@ -132,6 +222,7 @@ export component LauncherWindow inherits Window {
             HorizontalLayout {
                 padding-left: 12px; padding-right: 1px; padding-top: 1px; padding-bottom: 1px; spacing: 16px;
 
+                // --- Sidebar ---
                 VerticalLayout {
                     width: 54px; alignment: center; padding-top: 12px; padding-bottom: 12px;
 
@@ -144,7 +235,6 @@ export component LauncherWindow inherits Window {
                         SidebarButton { icon: ""; clicked => { root.sidebar_action(4); } }
                         SidebarButton { icon: ""; clicked => { root.sidebar_action(5); } }
 
-                        // The Power Toggle: dynamically turns active and bold when clicked
                         SidebarButton {
                             icon: "⏻";
                             icon_color: #e06c75;
@@ -154,21 +244,34 @@ export component LauncherWindow inherits Window {
                     }
                 }
 
+                // --- Main content area ---
                 Rectangle {
                     horizontal-stretch: 1; background: #21252b; border-radius: 15px; clip: true;
 
+                    // ====== MAIN VIEW ======
                     VerticalLayout {
                         visible: root.current_view == "main";
-                        padding: 12px; spacing: 12px;
+                        padding: 12px; spacing: 8px;
 
+                        // --- Search bar (left-aligned) ---
                         HorizontalLayout {
                             height: 40px; spacing: 12px;
+
+                            // Always shows > arrow
                             Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
+
+
                             Rectangle {
                                 horizontal-stretch: 1;
-                                Text { width: 100%; height: 100%; vertical-alignment: center; horizontal-alignment: left; font-size: 18px; color: #5c6370; text: search_input.text == "" ? "Search apps..." : ""; }
+                                Text {
+                                    width: 100%; height: 100%; vertical-alignment: center;
+                                    horizontal-alignment: left; font-size: 18px;
+                                    color: #5c6370; text: search_input.text == "" ? "Search apps..." : "";
+                                }
                                 search_input := TextInput {
-                                    width: 100%; height: 100%; vertical-alignment: center; horizontal-alignment: left; font-size: 18px; color: #abb2bf; single-line: true;
+                                    width: 100%; height: 100%; vertical-alignment: center;
+                                    horizontal-alignment: left; font-size: 18px; color: #abb2bf;
+                                    single-line: true;
                                     edited => { root.text_changed(self.text); }
                                     key-pressed(event) => {
                                         if (event.text == "1" && event.modifiers.alt) { root.sidebar_action(1); return accept; }
@@ -179,98 +282,193 @@ export component LauncherWindow inherits Window {
                                         if (event.text == Key.DownArrow) { if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); } return accept; }
                                         if (event.text == Key.UpArrow) { if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); } return accept; }
                                         if (event.text == Key.Return) { if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].text, event.modifiers.shift); } return accept; }
-                                        if (event.text == Key.Escape) { return accept; }
+                                        if (event.text == Key.Escape) { root.close_requested(); return accept; }
                                         return reject;
                                     }
                                 }
                             }
-                            Text { vertical-alignment: center; color: #5c6370; font-size: 13px; font-weight: 600; text: root.ribbon_text; }
+
+                            // Clear button — fills full 40px height, circle centered inside it
+                            Rectangle {
+                                visible: search_input.text != "";
+                                width: 26px;
+                                VerticalLayout { alignment: center;
+                                    Rectangle {
+                                        width: 26px; height: 26px; border-radius: 13px;
+                                        background: ta_clear.has-hover ? #3e4451 : transparent;
+                                        ta_clear := TouchArea {
+                                            width: 100%; height: 100%; mouse-cursor: pointer;
+                                            clicked => { root.clear_search(); }
+                                        }
+                                        Text {
+                                            text: "✕"; color: #5c6370;
+                                            font-size: 13px; width: 100%; height: 100%;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Ribbon label — pill-shaped CALC badge in calc mode, plain text otherwise
+                            Rectangle {
+                                border-radius: root.calc_mode ? 12px : 0px;
+                                background: root.calc_mode ? #2c323c : transparent;
+                                VerticalLayout { alignment: center; padding-left: root.calc_mode ? 10px : 0px; padding-right: root.calc_mode ? 10px : 0px;
+                                    Text {
+                                        text: root.calc_mode ? "CALC" : root.ribbon_text;
+                                        color: root.calc_mode ? #abb2bf : #5c6370;
+                                        font-size: 13px; font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
                         }
 
-                        HorizontalLayout {
-                            vertical-stretch: 1; spacing: 12px;
-                            list_container := Rectangle {
-                                horizontal-stretch: 1; clip: true; border-radius: 12px; background: transparent;
-                                list_flickable := Flickable {
-                                    width: 100%; height: 100%; interactive: true; viewport-height: inner_layout.preferred-height;
-                                    inner_layout := VerticalLayout {
-                                        width: list_container.width; alignment: start;
+                        // --- Content area: App list or Calculator ---
+                        Rectangle { vertical-stretch: 1; clip: true;
 
-                                        for item[index] in root.display_items: Rectangle {
-                                            height: root.item_height; width: list_container.width;
+                            // ===== APP LIST =====
+                            Rectangle {
+                                visible: !root.calc_mode;
+                                width: 100%; height: 100%;
 
-                                            pill := Rectangle {
-                                                width: item_ta.pressed ? parent.width - 8px : parent.width - 4px;
-                                                height: item_ta.pressed ? 36px : 40px;
-                                                border-radius: 20px;
+                                list_container := Rectangle {
+                                    width: 100%; height: 100%; clip: true; border-radius: 12px; background: transparent;
+                                    list_flickable := Flickable {
+                                        width: 100%; height: 100%; interactive: true; viewport-height: inner_layout.preferred-height;
+                                        inner_layout := VerticalLayout {
+                                            width: list_container.width; alignment: start;
 
-                                                background: transparent;
+                                            for item[index] in root.display_items: Rectangle {
+                                                height: root.item_height; width: list_container.width;
 
-                                                animate width { duration: 100ms; easing: ease-out; }
-                                                animate height { duration: 100ms; easing: ease-out; }
-
-                                                indicator := Rectangle {
-                                                    x: 4px;
-                                                    y: (parent.height - 16px) / 2;
-                                                    width: 4px; height: 16px; border-radius: 2px;
+                                                pill := Rectangle {
+                                                    width: item_ta.pressed ? parent.width - 8px : parent.width - 4px;
+                                                    height: item_ta.pressed ? 36px : 40px;
+                                                    border-radius: 20px;
                                                     background: transparent;
+                                                    animate width { duration: 100ms; easing: ease-out; }
+                                                    animate height { duration: 100ms; easing: ease-out; }
+
+                                                    indicator := Rectangle {
+                                                        x: 4px;
+                                                        y: (parent.height - 16px) / 2;
+                                                        width: 4px; height: 16px; border-radius: 2px;
+                                                        background: transparent;
+                                                    }
+
+                                                    states [
+                                                        active when index == root.absolute_index: {
+                                                            background: #2c323c;
+                                                            indicator.x: 12px;
+                                                            indicator.background: #61afef;
+                                                            in {
+                                                                animate background { duration: 150ms; }
+                                                                animate indicator.x { duration: 250ms; easing: ease-out-bounce; }
+                                                                animate indicator.background { duration: 150ms; }
+                                                            }
+                                                            out {
+                                                                animate background { duration: 0ms; }
+                                                                animate indicator.x { duration: 0ms; }
+                                                                animate indicator.background { duration: 0ms; }
+                                                            }
+                                                        }
+                                                        hover when item_ta.has-hover && index != root.absolute_index: {
+                                                            background: #252931;
+                                                            in { animate background { duration: 100ms; } }
+                                                            out { animate background { duration: 150ms; } }
+                                                        }
+                                                    ]
+
+                                                    HorizontalLayout {
+                                                        padding-left: 28px; spacing: 16px;
+                                                        Rectangle {
+                                                            width: 24px; height: parent.height;
+                                                            if item.has_native_icon: Image { source: item.native_icon; width: 24px; height: 24px; image-fit: contain; }
+                                                            if !item.has_native_icon: Text { text: item.text_icon; font-family: root.icon_font; color: index == root.absolute_index ? #61afef : #abb2bf; font-size: 20px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                                                        }
+                                                        Text { text: item.text; color: index == root.absolute_index ? #ffffff : #abb2bf; font-size: 15px; font-weight: 600; height: parent.height; vertical-alignment: center; overflow: elide; }
+                                                    }
                                                 }
 
-                                                states [
-                                                    active when index == root.absolute_index: {
-                                                        background: #2c323c;
-                                                        indicator.x: 12px;
-                                                        indicator.background: #61afef;
-
-                                                        in {
-                                                            animate background { duration: 150ms; }
-                                                            animate indicator.x { duration: 250ms; easing: ease-out-bounce; }
-                                                            animate indicator.background { duration: 150ms; }
-                                                        }
-                                                        out {
-                                                            animate background { duration: 0ms; }
-                                                            animate indicator.x { duration: 0ms; }
-                                                            animate indicator.background { duration: 0ms; }
-                                                        }
-                                                    }
-                                                    hover when item_ta.has-hover && index != root.absolute_index: {
-                                                        background: #252931;
-                                                        in { animate background { duration: 100ms; } }
-                                                        out { animate background { duration: 150ms; } }
-                                                    }
-                                                ]
-
-                                                HorizontalLayout {
-                                                    padding-left: 28px; spacing: 16px;
-                                                    Rectangle {
-                                                        width: 24px; height: parent.height;
-                                                        if item.has_native_icon: Image { source: item.native_icon; width: 24px; height: 24px; image-fit: contain; }
-                                                        if !item.has_native_icon: Text { text: item.text_icon; font-family: root.icon_font; color: index == root.absolute_index ? #61afef : #abb2bf; font-size: 20px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                                                    }
-                                                    Text { text: item.text; color: index == root.absolute_index ? #ffffff : #abb2bf; font-size: 15px; font-weight: 600; height: parent.height; vertical-alignment: center; overflow: elide; }
+                                                item_ta := TouchArea {
+                                                    width: 100%; height: 100%; mouse-cursor: pointer;
+                                                    clicked => { root.absolute_index = index; root.execute_selected(item.text, false); }
                                                 }
-                                            }
-
-                                            item_ta := TouchArea {
-                                                width: 100%; height: 100%; mouse-cursor: pointer;
-                                                clicked => { root.absolute_index = index; root.execute_selected(item.text, false); }
                                             }
                                         }
+                                    }
+                                }
+                            }
+
+                            // ===== CALCULATOR DISPLAY =====
+                            Rectangle {
+                                visible: root.calc_mode;
+                                width: 100%; height: 100%;
+
+                                VerticalLayout {
+                                    width: 100%; height: 100%;
+                                    alignment: center;
+                                    spacing: 4px;
+
+                                    Text {
+                                        text: root.calc_expression;
+                                        color: #5c6370;
+                                        font-size: 18px;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: bottom;
+                                    }
+                                    Text {
+                                        text: root.calc_result == "" ? "..." : root.calc_result;
+                                        color: root.calc_error ? #e06c75 : #ffffff;
+                                        font-size: 64px;
+                                        font-weight: 700;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    Text {
+                                        text: root.calc_result == "" ? "" : "Enter to copy  ·  Esc to close";
+                                        color: #5c6370;
+                                        font-size: 13px;
+                                        font-weight: 600;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: top;
                                     }
                                 }
                             }
                         }
                     }
 
+                    // ====== POWER VIEW ======
                     GridLayout {
                         visible: root.current_view == "power"; padding: 24px; spacing: 24px; vertical-stretch: 1;
                         Row {
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #3e4451; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰌾"; color: #e5c07b; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Lock"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #4b2a2e; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰐥"; color: #e06c75; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Shutdown"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
+                            PowerButton {
+                                icon: "󰌾"; label: "Lock";
+                                icon_color: #e5c07b; bg: #3e4451;
+                                is_focused: root.power_index == 0;
+                                clicked => { root.power_action("lock"); }
+                            }
+                            PowerButton {
+                                icon: "󰐥"; label: "Shutdown";
+                                icon_color: #e06c75; bg: #4b2a2e;
+                                is_focused: root.power_index == 1;
+                                clicked => { root.power_action("shutdown"); }
+                            }
                         }
                         Row {
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #2c323c; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰍃"; color: #56b6c2; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Logout"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
-                            Rectangle { background: transparent; TouchArea {} Rectangle { width: parent.width; height: parent.height; border-radius: 24px; background: #3e4451; VerticalLayout { alignment: center; spacing: 12px; Text { text: "󰜉"; color: #98c379; font-family: root.icon_font; font-size: 40px; horizontal-alignment: center; } Text { text: "Reboot"; color: #abb2bf; font-size: 14px; font-weight: 600; horizontal-alignment: center; } } } }
+                            PowerButton {
+                                icon: "󰍃"; label: "Logout";
+                                icon_color: #56b6c2; bg: #2c323c;
+                                is_focused: root.power_index == 2;
+                                clicked => { root.power_action("logout"); }
+                            }
+                            PowerButton {
+                                icon: "󰜉"; label: "Reboot";
+                                icon_color: #98c379; bg: #3e4451;
+                                is_focused: root.power_index == 3;
+                                clicked => { root.power_action("reboot"); }
+                            }
                         }
                     }
                 }

@@ -11,6 +11,9 @@ tokio = { version = "1", features = ["full"] }
 fuzzy-matcher = "0.3.7"
 zbus = { version = "3.14", features = ["tokio"] }
 futures-util = "0.3"
+meval = "0.2"
+log = "0.4"
+env_logger = "0.11"
 
 [[bin]]
 name = "daemon"
