@@ -1,4 +1,5 @@
 export struct AppItem {
+    app_id: string,
     text: string,
     has_native_icon: bool,
     native_icon: image,
@@ -202,7 +203,7 @@ export component LauncherWindow inherits Window {
             // ---- MAIN VIEW KEYS ----
             if (event.text == Key.Escape) { root.close_requested(); return accept; }
             if (event.text == Key.Return) {
-                if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].text, event.modifiers.shift); }
+                if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].app_id, event.modifiers.shift); }
                 return accept;
             }
             if (event.text == Key.UpArrow) {
@@ -281,7 +282,7 @@ export component LauncherWindow inherits Window {
                                         if (event.text == "5" && event.modifiers.alt) { root.sidebar_action(5); return accept; }
                                         if (event.text == Key.DownArrow) { if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); } return accept; }
                                         if (event.text == Key.UpArrow) { if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); } return accept; }
-                                        if (event.text == Key.Return) { if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].text, event.modifiers.shift); } return accept; }
+                                        if (event.text == Key.Return) { if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].app_id, event.modifiers.shift); } return accept; }
                                         if (event.text == Key.Escape) { root.close_requested(); return accept; }
                                         return reject;
                                     }
@@ -393,7 +394,7 @@ export component LauncherWindow inherits Window {
 
                                                 item_ta := TouchArea {
                                                     width: 100%; height: 100%; mouse-cursor: pointer;
-                                                    clicked => { root.absolute_index = index; root.execute_selected(item.text, false); }
+                                                    clicked => { root.absolute_index = index; root.execute_selected(item.app_id, false); }
                                                 }
                                             }
                                         }

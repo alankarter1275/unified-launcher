@@ -1,14 +1,18 @@
 //! Power / session actions (Sway-optimized).
 
-/// Execute a power/session action.
-pub fn handle_power_action(action: &str) {
-    let (cmd, args) = match action {
-        "lock" => ("swaylock", vec!["-f", "-c", "000000"] as Vec<&str>),
-        "logout" => ("swaymsg", vec!["exit"]),
-        "shutdown" => ("systemctl", vec!["poweroff"]),
-        "reboot" => ("systemctl", vec!["reboot"]),
-        _ => return,
+use std::io;
+use std::process::Command;
+
+use crate::types::PowerAction;
+
+/// Execute a validated power/session action.
+pub fn handle_power_action(action: PowerAction) -> io::Result<()> {
+    let (command, arguments): (&str, &[&str]) = match action {
+        PowerAction::Lock => ("swaylock", &["-f", "-c", "000000"]),
+        PowerAction::Logout => ("swaymsg", &["exit"]),
+        PowerAction::Shutdown => ("systemctl", &["poweroff"]),
+        PowerAction::Reboot => ("systemctl", &["reboot"]),
     };
-    let args_refs: Vec<&str> = args.iter().map(|s| *s).collect();
-    let _ = std::process::Command::new(cmd).args(args_refs).spawn();
+
+    Command::new(command).args(arguments).spawn().map(|_| ())
 }

@@ -12,11 +12,10 @@ Designed for low-spec machines (4GB RAM, HDD) — the daemon caches app entries 
 │  (Slint UI) │                  │                              │
 │             │   JSON protocol  │  • Crawls .desktop files     │
 │  Fuzzy      │                  │  • Launches apps on request  │
-│  search     │  EXEC_APP:name   │  • PolKit agent (D-Bus)     │
-│             │  POWER_ACTION:   │  • Power/session actions     │
-│  Quick      │    lock|logout   │                              │
-│  sidebar    │    shutdown|     │  • Flatpak + Snap support    │
-│             │    reboot        │                              │
+│  search     │  JSON-line IPC   │  • PolKit agent (D-Bus)      │
+│             │  launch_app      │  • Power/session actions     │
+│  Quick      │  power_action    │                              │
+│  sidebar    │                  │  • Flatpak + Snap support    │
 └─────────────┘                  └──────────────────────────────┘
 ```
 
@@ -109,7 +108,7 @@ bindsym $mod+space exec /path/to/client
 
 | Variable                    | Default                     | Description                    |
 |-----------------------------|-----------------------------|--------------------------------|
-| `UNIFIED_LAUNCHER_SOCKET`   | `/tmp/unified_launcher.sock` | Unix socket path for IPC       |
+| `UNIFIED_LAUNCHER_SOCKET`   | `$XDG_RUNTIME_DIR/unified-launcher.sock` | Absolute Unix socket override for IPC |
 
 ## PolKit Authentication
 
@@ -117,8 +116,8 @@ The daemon registers itself as a PolKit authentication agent so that privilege-e
 dialogs (e.g., from `pkexec`, GParted, system settings) show a native password prompt
 instead of failing silently.
 
-The password is passed from the GUI client back to the daemon via a secure temporary file
-with `0600` permissions — no stdout scraping or magic markers.
+The password is returned from the GUI client to the daemon over a private process pipe.
+It is never written to a temporary filesystem path.
 
 ## Technical Details
 

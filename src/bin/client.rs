@@ -1,68 +1,82 @@
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use meval;
-use serde::Deserialize;
 use slint::{Image, ModelRc, SharedString, VecModel};
 
-use unified_launcher::types::socket_path;
+use unified_launcher::paths::socket_path;
+use unified_launcher::types::{json_line, ClientMessage, PowerAction, ServerMessage};
 
 slint::include_modules!();
 
-#[derive(Deserialize)]
-struct AppInit {
-    name: String,
-    icon: Option<String>,
-}
-#[derive(Deserialize)]
-struct InitPayload {
-    apps: Vec<AppInit>,
-}
-
-/// Try to spawn the daemon if it's not running.
-fn ensure_daemon_running(sock_path: &str) -> bool {
-    if Path::new(sock_path).exists() {
+/// Try to spawn the daemon only when a connection cannot be established.
+fn ensure_daemon_running(socket_path: &Path) -> bool {
+    if UnixStream::connect(socket_path).is_ok() {
         return true;
     }
 
-    let daemon_path = if let Ok(exe) = env::current_exe() {
-        let mut d = exe.clone();
-        d.pop();
-        d.push("daemon");
-        d
+    let daemon_path = if let Ok(executable) = env::current_exe() {
+        let mut daemon_path = executable;
+        daemon_path.pop();
+        daemon_path.push("daemon");
+        daemon_path
     } else {
-        eprintln!("[Client] Could not determine executable path.");
+        eprintln!("[Client] Could not determine the daemon executable path.");
         return false;
     };
 
-    eprintln!("[Client] Daemon not running. Starting it...");
+    eprintln!("[Client] Daemon is not reachable. Starting it...");
+    let child = match std::process::Command::new(&daemon_path).spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            eprintln!("[Client] Could not start daemon: {error}");
+            return false;
+        }
+    };
 
-    match std::process::Command::new(&daemon_path).spawn() {
-        Ok(child) => {
-            for _ in 0..20 {
-                if Path::new(sock_path).exists() {
-                    return true;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-            eprintln!("[Client] Daemon started (pid {}), waiting...", child.id());
-            thread::sleep(Duration::from_millis(500));
-            Path::new(sock_path).exists()
+    for _ in 0..25 {
+        if UnixStream::connect(socket_path).is_ok() {
+            return true;
         }
-        Err(e) => {
-            eprintln!("[Client] Could not start daemon: {}", e);
-            false
+        thread::sleep(Duration::from_millis(100));
+    }
+
+    eprintln!(
+        "[Client] Daemon started as pid {}, but the socket is still unavailable.",
+        child.id()
+    );
+    false
+}
+
+fn send_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) {
+    let payload = match json_line(request) {
+        Ok(payload) => payload,
+        Err(error) => {
+            eprintln!("[Client] Could not encode daemon request: {error}");
+            return;
         }
+    };
+
+    let mut stream = match writer.lock() {
+        Ok(stream) => stream,
+        Err(_) => {
+            eprintln!("[Client] Daemon writer lock was poisoned.");
+            return;
+        }
+    };
+    if let Err(error) = stream
+        .write_all(payload.as_bytes())
+        .and_then(|()| stream.flush())
+    {
+        eprintln!("[Client] Could not send daemon request: {error}");
     }
 }
 
@@ -75,77 +89,85 @@ fn copy_to_clipboard(text: &str) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sock_path = socket_path();
-
-    if !ensure_daemon_running(&sock_path) {
-        eprintln!("[Client] Daemon failed to start.");
-        std::process::exit(1);
+    let socket_path = socket_path()?;
+    if !ensure_daemon_running(&socket_path) {
+        return Err(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "daemon failed to become reachable",
+        )
+        .into());
     }
 
     let ui = LauncherWindow::new()?;
     let matcher = Arc::new(SkimMatcherV2::default());
-
-    let stream = UnixStream::connect(&sock_path)
-        .unwrap_or_else(|_| panic!("[Client] Could not connect to daemon at {}", sock_path));
+    let stream = UnixStream::connect(&socket_path)?;
 
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
+    let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
+    let apps = match initial_message {
+        ServerMessage::Init { apps } => apps,
+        ServerMessage::Error { message } => {
+            return Err(io::Error::new(io::ErrorKind::Other, message).into());
+        }
+        ServerMessage::ActionResult { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "daemon sent an action result before initialization",
+            )
+            .into());
+        }
+    };
 
-    let payload: InitPayload = serde_json::from_str(&init_line)?;
     let mut app_items = Vec::new();
-    for app in payload.apps {
+    for app in apps {
         let mut has_icon = false;
-        let mut img = Image::default();
+        let mut image = Image::default();
         if let Some(icon_path) = app.icon {
             if let Ok(loaded) = Image::load_from_path(Path::new(&icon_path)) {
-                img = loaded;
+                image = loaded;
                 has_icon = true;
             }
         }
         app_items.push(AppItem {
+            app_id: app.id.into(),
             text: app.name.into(),
             has_native_icon: has_icon,
-            native_icon: img,
+            native_icon: image,
             text_icon: "\u{f00e}".into(),
         });
     }
 
-    let apps_rc = Rc::new(app_items);
-    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps_rc).clone()))));
-    ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps_rc.len())));
+    let apps = Rc::new(app_items);
+    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps).clone()))));
+    ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
 
-    let (tx, rx) = mpsc::channel::<String>();
-    let tx_exec = tx.clone();
-    let mut write_stream = stream.try_clone()?;
-
-    thread::spawn(move || {
-        while let Ok(msg) = rx.recv() {
-            let _ = write_stream.write_all(format!("{}\n", msg).as_bytes());
-        }
-    });
+    // A synchronous local socket write is tiny and prevents the launcher from
+    // exiting before a background writer has delivered its request.
+    let writer = Arc::new(Mutex::new(stream.try_clone()?));
 
     // ---- Calculator mode state ----
-    let calc_active = Arc::new(AtomicBool::new(false));
-    let calc_active_search = calc_active.clone();
-    let calc_active_exec = calc_active.clone();
+    let calculator_active = Arc::new(AtomicBool::new(false));
+    let calculator_active_search = Arc::clone(&calculator_active);
+    let calculator_active_execute = Arc::clone(&calculator_active);
 
     let ui_handle_search = ui.as_weak();
     let matcher_search = Arc::clone(&matcher);
-    let apps_search = Rc::clone(&apps_rc);
+    let apps_search = Rc::clone(&apps);
 
     ui.on_text_changed(move |query| {
         let ui = ui_handle_search.unwrap();
-        let query_str = query.as_str();
-        let trimmed = query_str.trim();
+        let query = query.as_str();
+        let trimmed = query.trim();
 
         // ---- CALCULATOR MODE (when search starts with =) ----
-        if trimmed.starts_with('=') {
-            calc_active_search.store(true, Ordering::Relaxed);
+        if let Some(expression) = trimmed.strip_prefix('=') {
+            calculator_active_search.store(true, Ordering::Relaxed);
             ui.set_calc_mode(true);
-            let expr = trimmed[1..].trim();
+            let expression = expression.trim();
 
-            if expr.is_empty() {
+            if expression.is_empty() {
                 ui.set_calc_expression("".into());
                 ui.set_calc_result("...".into());
                 ui.set_calc_error(false);
@@ -153,29 +175,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
 
-            let result = meval::eval_str(expr);
-            match result {
-                Ok(val) => {
-                    let (display, raw) = if val.fract() == 0.0 && val.is_finite() {
-                        (format!("{}", val as i64), format!("{}", val as i64))
-                    } else if val.is_finite() {
-                        let formatted = format!("{:.6}", val)
+            match meval::eval_str(expression) {
+                Ok(value) => {
+                    let (display, raw) = if value.fract() == 0.0 && value.is_finite() {
+                        (format!("{}", value as i64), format!("{}", value as i64))
+                    } else if value.is_finite() {
+                        let formatted = format!("{value:.6}")
                             .trim_end_matches('0')
                             .trim_end_matches('.')
                             .to_string();
-                        (formatted.clone(), format!("{}", val))
-                    } else if val.is_infinite() {
+                        (formatted.clone(), value.to_string())
+                    } else if value.is_infinite() {
                         ("Infinity".to_string(), String::new())
                     } else {
                         ("undefined".to_string(), String::new())
                     };
-                    ui.set_calc_expression(expr.into());
+                    ui.set_calc_expression(expression.into());
                     ui.set_calc_result(display.into());
                     ui.set_calc_error(false);
                     ui.set_calc_raw_result(raw.into());
                 }
-                Err(_e) => {
-                    ui.set_calc_expression(expr.into());
+                Err(_) => {
+                    ui.set_calc_expression(expression.into());
                     ui.set_calc_result("...".into());
                     ui.set_calc_error(false);
                     ui.set_calc_raw_result("".into());
@@ -185,7 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // ---- NORMAL FUZZY SEARCH ----
-        calc_active_search.store(false, Ordering::Relaxed);
+        calculator_active_search.store(false, Ordering::Relaxed);
         ui.set_calc_mode(false);
 
         if trimmed.is_empty() {
@@ -202,32 +223,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     scored_apps.push((score, app.clone()));
                 }
             }
-            scored_apps.sort_by(|a, b| b.0.cmp(&a.0));
+            scored_apps.sort_by(|left, right| right.0.cmp(&left.0));
             let total_count = scored_apps.len();
-            let final_list: Vec<AppItem> =
-                scored_apps.into_iter().take(100).map(|(_, v)| v).collect();
+            let matches: Vec<AppItem> = scored_apps
+                .into_iter()
+                .take(100)
+                .map(|(_, app)| app)
+                .collect();
 
-            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(final_list))));
+            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(matches))));
             ui.set_absolute_index(0);
             ui.invoke_adjust_scroll();
-            let lbl = if total_count == 1 {
+            let label = if total_count == 1 {
                 "1 Match".to_string()
             } else {
-                format!("{} Matches", total_count)
+                format!("{total_count} Matches")
             };
-            ui.set_ribbon_text(SharedString::from(lbl));
+            ui.set_ribbon_text(SharedString::from(label));
         }
     });
 
-    // Clone BEFORE tx_exec gets moved into the execute_selected closure
-    let tx_power = tx_exec.clone();
-
-    let ui_exec = ui.as_weak();
+    let writer_execute = Arc::clone(&writer);
+    let ui_execute = ui.as_weak();
     ui.on_execute_selected(move |selected, _is_shift| {
-        let ui = ui_exec.unwrap();
+        let ui = ui_execute.unwrap();
 
-        // Calculator mode: copy result to clipboard
-        if calc_active_exec.load(Ordering::Relaxed) {
+        // Calculator mode: copy result to clipboard.
+        if calculator_active_execute.load(Ordering::Relaxed) {
             let raw = ui.get_calc_raw_result();
             if !raw.is_empty() {
                 copy_to_clipboard(raw.as_str());
@@ -235,25 +257,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(0);
         }
 
-        // Normal mode: execute app
-        let _ = tx_exec.send(format!("EXEC_APP:{}", selected.as_str()));
+        send_request(
+            &writer_execute,
+            &ClientMessage::LaunchApp {
+                app_id: selected.to_string(),
+            },
+        );
         std::process::exit(0);
     });
 
-    // Clear search button handler
+    // Clear search button handler.
     let ui_clear = ui.as_weak();
-    let apps_clear = Rc::clone(&apps_rc);
+    let apps_clear = Rc::clone(&apps);
     ui.on_clear_search(move || {
         let ui = ui_clear.unwrap();
         if ui.get_calc_mode() {
-            // In calc mode: clear the expression but stay in calc mode
             ui.set_search_text("=".into());
             ui.set_calc_expression("".into());
             ui.set_calc_result("...".into());
             ui.set_calc_error(false);
             ui.set_calc_raw_result("".into());
         } else {
-            // Normal mode: clear search and reset app list
             ui.set_search_text("".into());
             ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(
                 (*apps_clear).clone(),
@@ -264,17 +288,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let ui_handle_high = ui.as_weak();
-    ui.on_item_highlighted(move |_idx, total, _name| {
-        let ui = ui_handle_high.unwrap();
-        let lbl = if total == 1 {
+    let ui_handle_highlight = ui.as_weak();
+    ui.on_item_highlighted(move |_index, total, _name| {
+        let ui = ui_handle_highlight.unwrap();
+        let label = if total == 1 {
             "1 App".to_string()
         } else {
-            format!("{} Apps", total)
+            format!("{total} Apps")
         };
-        ui.set_ribbon_text(SharedString::from(lbl));
+        ui.set_ribbon_text(SharedString::from(label));
     });
 
+    // These fixed actions remain until Phase 2 replaces them with inline views.
     ui.on_sidebar_action(move |index| {
         match index {
             1 => {
@@ -287,7 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             3 => {
                 let _ = std::process::Command::new("footclient")
-                    .current_dir(&env::var("HOME").unwrap_or_default())
+                    .current_dir(env::var("HOME").unwrap_or_default())
                     .args(["-e", "yazi"])
                     .spawn();
             }
@@ -306,9 +331,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     });
 
-    let tx_power2 = tx_power.clone();
+    let writer_power = Arc::clone(&writer);
     ui.on_power_action(move |action| {
-        let _ = tx_power2.send(format!("POWER_ACTION:{}", action.as_str()));
+        let Some(action) = PowerAction::parse(action.as_str()) else {
+            eprintln!("[Client] Ignoring unknown power action: {action}");
+            return;
+        };
+        send_request(&writer_power, &ClientMessage::PowerAction { action });
         std::process::exit(0);
     });
 
