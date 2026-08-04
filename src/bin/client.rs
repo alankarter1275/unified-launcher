@@ -17,43 +17,55 @@ use unified_launcher::types::{json_line, ClientMessage, PowerAction, ServerMessa
 
 slint::include_modules!();
 
-/// Try to spawn the daemon only when a connection cannot be established.
-fn ensure_daemon_running(socket_path: &Path) -> bool {
-    if UnixStream::connect(socket_path).is_ok() {
-        return true;
+/// Connect to the daemon, starting it only when it is genuinely unavailable.
+fn connect_or_start_daemon(socket_path: &Path) -> io::Result<UnixStream> {
+    if let Ok(stream) = UnixStream::connect(socket_path) {
+        return Ok(stream);
     }
 
-    let daemon_path = if let Ok(executable) = env::current_exe() {
-        let mut daemon_path = executable;
-        daemon_path.pop();
-        daemon_path.push("daemon");
-        daemon_path
-    } else {
-        eprintln!("[Client] Could not determine the daemon executable path.");
-        return false;
-    };
+    let daemon_path = env::current_exe()
+        .map(|mut executable| {
+            executable.pop();
+            executable.push("daemon");
+            executable
+        })
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("could not determine daemon executable path: {error}"),
+            )
+        })?;
 
     eprintln!("[Client] Daemon is not reachable. Starting it...");
-    let child = match std::process::Command::new(&daemon_path).spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            eprintln!("[Client] Could not start daemon: {error}");
-            return false;
-        }
-    };
+    let child = std::process::Command::new(&daemon_path)
+        .spawn()
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("could not start daemon {}: {error}", daemon_path.display()),
+            )
+        })?;
 
+    let mut last_error = None;
     for _ in 0..25 {
-        if UnixStream::connect(socket_path).is_ok() {
-            return true;
+        match UnixStream::connect(socket_path) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
         }
         thread::sleep(Duration::from_millis(100));
     }
 
-    eprintln!(
-        "[Client] Daemon started as pid {}, but the socket is still unavailable.",
-        child.id()
-    );
-    false
+    let reason = last_error
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "unknown connection error".to_string());
+    Err(io::Error::new(
+        io::ErrorKind::ConnectionRefused,
+        format!(
+            "daemon started as pid {}, but socket {} is unavailable: {reason}",
+            child.id(),
+            socket_path.display()
+        ),
+    ))
 }
 
 fn send_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) {
@@ -90,17 +102,10 @@ fn copy_to_clipboard(text: &str) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket_path()?;
-    if !ensure_daemon_running(&socket_path) {
-        return Err(io::Error::new(
-            io::ErrorKind::ConnectionRefused,
-            "daemon failed to become reachable",
-        )
-        .into());
-    }
+    let stream = connect_or_start_daemon(&socket_path)?;
 
     let ui = LauncherWindow::new()?;
     let matcher = Arc::new(SkimMatcherV2::default());
-    let stream = UnixStream::connect(&socket_path)?;
 
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut init_line = String::new();
