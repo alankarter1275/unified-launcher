@@ -6,25 +6,33 @@ on:
   pull_request:
     branches: ["**"]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
+  verify:
+    name: Verify
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: write
-
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
-      - name: install Rust
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
-      - name: install system dependencies (slint)
+      - name: Install system dependencies for Slint
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
@@ -34,83 +42,20 @@ jobs:
             libegl-dev \
             fontconfig
 
-      - name: cache cargo
+      - name: Cache Cargo dependencies
         uses: Swatinem/rust-cache@v2
 
-      - name: check
-        id: check
-        run: |
-          cargo check --message-format=short 2>&1 | tee /tmp/check.txt
-        continue-on-error: true
+      - name: Check formatting
+        run: cargo fmt --all -- --check
 
-      - name: publish check log on failure
-        if: steps.check.outcome == 'failure'
-        run: |
-          mkdir -p ci-logs
-          grep -E "^error" /tmp/check.txt | head -100 > ci-logs/check-latest.txt || true
-          if [ ! -s ci-logs/check-latest.txt ]; then
-            tail -100 /tmp/check.txt > ci-logs/check-latest.txt || true
-          fi
-          echo "--- run $GITHUB_RUN_ID ---" >> ci-logs/check-latest.txt
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add -f ci-logs/check-latest.txt
-          git commit -m "ci: publish check failure [skip ci]" || true
-          git pull --rebase --autostash origin "$GITHUB_REF_NAME" 2>/dev/null || true
-          git push origin "HEAD:$GITHUB_REF_NAME" 2>/dev/null || true
+      - name: Check
+        run: cargo check --all-targets --locked
 
-      - name: fail if check failed
-        if: steps.check.outcome == 'failure'
-        run: exit 1
+      - name: Test
+        run: cargo test --all-targets --locked
 
-      - name: build
-        id: build
-        run: |
-          cargo build --release --message-format=short 2>&1 | tee /tmp/build.txt
-        continue-on-error: true
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: publish build log on failure
-        if: steps.build.outcome == 'failure'
-        run: |
-          mkdir -p ci-logs
-          grep -E "^error" /tmp/build.txt | head -100 > ci-logs/build-latest.txt || true
-          if [ ! -s ci-logs/build-latest.txt ]; then
-            tail -100 /tmp/build.txt > ci-logs/build-latest.txt || true
-          fi
-          echo "--- run $GITHUB_RUN_ID ---" >> ci-logs/build-latest.txt
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add -f ci-logs/build-latest.txt
-          git commit -m "ci: publish build failure [skip ci]" || true
-          git pull --rebase --autostash origin "$GITHUB_REF_NAME" 2>/dev/null || true
-          git push origin "HEAD:$GITHUB_REF_NAME" 2>/dev/null || true
-
-      - name: fail if build failed
-        if: steps.build.outcome == 'failure'
-        run: exit 1
-
-      - name: clippy
-        id: clippy
-        run: |
-          cargo clippy --all-targets --message-format=short 2>&1 | tee /tmp/clippy.txt
-        continue-on-error: true
-
-      - name: publish clippy log on failure
-        if: steps.clippy.outcome == 'failure'
-        run: |
-          mkdir -p ci-logs
-          grep -E "error|warning:" /tmp/clippy.txt | head -100 > ci-logs/clippy-latest.txt || true
-          if [ ! -s ci-logs/clippy-latest.txt ]; then
-            tail -100 /tmp/clippy.txt > ci-logs/clippy-latest.txt || true
-          fi
-          echo "--- run $GITHUB_RUN_ID ---" >> ci-logs/clippy-latest.txt
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
-          git add -f ci-logs/clippy-latest.txt
-          git commit -m "ci: publish clippy failures [skip ci]" || true
-          git pull --rebase --autostash origin "$GITHUB_REF_NAME" 2>/dev/null || true
-          git push origin "HEAD:$GITHUB_REF_NAME" 2>/dev/null || true
-
-      - name: fail if clippy failed
-        if: steps.clippy.outcome == 'failure'
-        run: exit 1
+      - name: Build release binaries
+        run: cargo build --release --locked
