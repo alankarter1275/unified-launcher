@@ -173,6 +173,7 @@ async fn authenticate_with_polkit_helper(cookie: &str, password: &str) {
         warn!("Could not flush the PolKit password: {error}");
         return;
     }
+    drop(stdin);
 
     match child.wait().await {
         Ok(status) => info!("PolKit transaction complete with status {status}"),
@@ -255,7 +256,7 @@ async fn register_polkit_agent() -> Option<Connection> {
 // IPC
 // --------------------------------------------------------
 fn json_error(error: serde_json::Error) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 async fn write_server_message(
@@ -294,7 +295,7 @@ fn launch_app(app: &AppEntry) -> io::Result<()> {
 
 async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
     let (reader, mut writer) = stream.into_split();
-    let apps = {
+    let apps: Vec<AppInit> = {
         let state = state.lock().await;
         state
             .apps

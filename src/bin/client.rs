@@ -223,7 +223,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     scored_apps.push((score, app.clone()));
                 }
             }
-            scored_apps.sort_by(|left, right| right.0.cmp(&left.0));
+            scored_apps.sort_by_key(|item| std::cmp::Reverse(item.0));
             let total_count = scored_apps.len();
             let matches: Vec<AppItem> = scored_apps
                 .into_iter()

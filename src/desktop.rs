@@ -59,7 +59,7 @@ pub fn get_app_dirs() -> Vec<PathBuf> {
 /// directories win, allowing user-level desktop entries to override system
 /// entries with the same desktop-file name.
 pub async fn crawl_desktop_entries() -> Vec<AppEntry> {
-    let mut entries_by_id = BTreeMap::new();
+    let mut entries_by_id: BTreeMap<String, AppEntry> = BTreeMap::new();
 
     for directory_path in get_app_dirs() {
         if !directory_path.exists() {

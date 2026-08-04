@@ -46,8 +46,8 @@ impl Default for LauncherState {
     }
 }
 
-fn invalid_state(error: impl std::error::Error + Send + Sync + 'static) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, error)
+fn invalid_state(error: impl std::fmt::Display) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
 
 fn validate(state: LauncherState) -> io::Result<LauncherState> {
@@ -95,7 +95,7 @@ fn load_from(path: &Path) -> io::Result<LauncherState> {
         Err(error) => return Err(error),
     };
 
-    let state = serde_json::from_slice(&bytes).map_err(invalid_state)?;
+    let state: LauncherState = serde_json::from_slice(&bytes).map_err(invalid_state)?;
     validate(state)
 }
 

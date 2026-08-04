@@ -64,6 +64,6 @@ pub fn save_cache(apps: &[AppEntry]) -> std::io::Result<()> {
         apps: apps.to_vec(),
     };
     let data = serde_json::to_vec(&cache)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string()))?;
     atomic_write(&app_cache_file()?, &data)
 }
