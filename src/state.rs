@@ -89,7 +89,9 @@ pub fn save(state: &LauncherState) -> io::Result<()> {
 fn load_from(path: &Path) -> io::Result<LauncherState> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(LauncherState::default()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(LauncherState::default())
+        }
         Err(error) => return Err(error),
     };
 
@@ -114,6 +116,9 @@ mod tests {
             pinned_apps: vec![None; PIN_SLOT_COUNT - 1],
             ..LauncherState::default()
         };
-        assert_eq!(validate(state).expect_err("invalid state").kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            validate(state).expect_err("invalid state").kind(),
+            io::ErrorKind::InvalidData
+        );
     }
 }

@@ -31,7 +31,9 @@ fn xdg_base_dir(variable: &str, fallback: impl FnOnce(PathBuf) -> PathBuf) -> io
             if path.is_absolute() {
                 Ok(path)
             } else {
-                Err(invalid_input(format!("{variable} must be an absolute path")))
+                Err(invalid_input(format!(
+                    "{variable} must be an absolute path"
+                )))
             }
         }
         None => Ok(fallback(home_dir()?)),

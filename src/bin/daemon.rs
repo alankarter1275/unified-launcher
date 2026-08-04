@@ -57,7 +57,8 @@ impl PolkitAgent {
 /// Ask the separate Slint process for a password over an anonymous stdout pipe.
 /// No password is written to a temporary file or passed as a process argument.
 async fn request_password(message: &str) -> Option<String> {
-    let mut client_executable = env::current_exe().unwrap_or_else(|_| PathBuf::from("polkit-client"));
+    let mut client_executable =
+        env::current_exe().unwrap_or_else(|_| PathBuf::from("polkit-client"));
     client_executable.pop();
     client_executable.push("polkit-client");
 

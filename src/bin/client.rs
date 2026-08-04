@@ -109,7 +109,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let apps = match initial_message {
         ServerMessage::Init { apps } => apps,
         ServerMessage::Error { message } => {
-            return Err(io::Error::new(io::ErrorKind::Other, message).into());
+            return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
         }
         ServerMessage::ActionResult { .. } => {
             return Err(io::Error::new(

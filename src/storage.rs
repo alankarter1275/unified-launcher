@@ -24,7 +24,9 @@ pub fn atomic_write(path: &Path, contents: &[u8]) -> io::Result<()> {
         .as_nanos();
     let temporary_path = parent.join(format!(
         ".{}.{}.{}.tmp",
-        path.file_name().and_then(|name| name.to_str()).unwrap_or("state"),
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("state"),
         std::process::id(),
         nonce
     ));
