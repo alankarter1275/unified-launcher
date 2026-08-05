@@ -133,7 +133,6 @@ component PowerButton inherits Rectangle {
 // --------------------------------------------------------
 component PinButton inherits Rectangle {
     in property <string> app_id;
-    in property <string> shortcut;
     in property <bool> has_native_icon: false;
     in property <image> native_icon;
     in property <string> text_icon: "+";
@@ -142,8 +141,8 @@ component PinButton inherits Rectangle {
     private property <bool> is_empty: root.app_id == "";
     private property <string> icon_font: "JetBrainsMono Nerd Font Propo";
 
-    width: 64px;
-    height: 54px;
+    width: 56px;
+    height: 56px;
     border-radius: 14px;
     border-width: 1px;
     border-color: root.is_empty ? #30343c : #3e4451;
@@ -164,39 +163,21 @@ component PinButton inherits Rectangle {
         }
     ]
 
-    VerticalLayout {
-        alignment: center;
-        spacing: 1px;
-
-        Rectangle {
-            width: 27px;
-            height: 28px;
-
-            if root.has_native_icon: Image {
-                source: root.native_icon;
-                width: 27px;
-                height: 27px;
-                image-fit: contain;
-            }
-            if !root.has_native_icon: Text {
-                text: root.text_icon;
-                color: root.is_empty ? #5c6370 : #61afef;
-                font-family: root.icon_font;
-                font-size: root.is_empty ? 21px : 22px;
-                width: 100%;
-                height: 100%;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-
-        Text {
-            text: root.shortcut;
-            color: root.is_empty ? #5c6370 : #abb2bf;
-            font-size: 10px;
-            font-weight: 600;
-            horizontal-alignment: center;
-        }
+    if root.has_native_icon: Image {
+        source: root.native_icon;
+        width: 100%;
+        height: 100%;
+        image-fit: contain;
+    }
+    if !root.has_native_icon: Text {
+        text: root.text_icon;
+        color: root.is_empty ? #5c6370 : #61afef;
+        font-family: root.icon_font;
+        font-size: root.is_empty ? 30px : 32px;
+        width: 100%;
+        height: 100%;
+        horizontal-alignment: center;
+        vertical-alignment: center;
     }
 
     ta := TouchArea {
@@ -303,6 +284,16 @@ export component LauncherWindow inherits Window {
         if (root.display_items.length > 0) {
             root.pin_app_requested(root.display_items[root.absolute_index].app_id, slot);
         }
+    }
+
+    public function shortcut_for_app(app_id: string) -> string {
+        if (root.pinned_items.length > 0 && root.pinned_items[0].app_id == app_id) { return root.pinned_items[0].shortcut; }
+        if (root.pinned_items.length > 1 && root.pinned_items[1].app_id == app_id) { return root.pinned_items[1].shortcut; }
+        if (root.pinned_items.length > 2 && root.pinned_items[2].app_id == app_id) { return root.pinned_items[2].shortcut; }
+        if (root.pinned_items.length > 3 && root.pinned_items[3].app_id == app_id) { return root.pinned_items[3].shortcut; }
+        if (root.pinned_items.length > 4 && root.pinned_items[4].app_id == app_id) { return root.pinned_items[4].shortcut; }
+        if (root.pinned_items.length > 5 && root.pinned_items[5].app_id == app_id) { return root.pinned_items[5].shortcut; }
+        return "";
     }
 
     public function adjust_scroll() {
@@ -676,18 +667,17 @@ export component LauncherWindow inherits Window {
                             }
                         }
 
-                        // --- Pinned apps: 3 columns × 2 rows ---
+                        // --- Pinned apps: one horizontal icon row ---
                         pinned_area := Rectangle {
                             visible: root.search_text == "" && !root.calc_mode;
-                            height: root.search_text == "" && !root.calc_mode ? 112px : 0px;
+                            height: root.search_text == "" && !root.calc_mode ? 64px : 0px;
                             width: 100%;
                             clip: true;
 
                             for pin[index] in root.pinned_items: PinButton {
-                                x: mod(index, 3) * (parent.width / 3) + (parent.width / 3 - self.width) / 2;
-                                y: floor(index / 3) * 58px;
+                                x: index * (parent.width / 6) + (parent.width / 6 - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
                                 app_id: pin.app_id;
-                                shortcut: pin.shortcut;
                                 has_native_icon: pin.has_native_icon;
                                 native_icon: pin.native_icon;
                                 text_icon: pin.text_icon;
@@ -726,6 +716,7 @@ export component LauncherWindow inherits Window {
                                             for item[index] in root.display_items: Rectangle {
                                                 height: root.item_height;
                                                 width: list_container.width;
+                                                property <string> app_shortcut: root.shortcut_for_app(item.app_id);
 
                                                 pill := Rectangle {
                                                     width: item_ta.pressed ? parent.width - 8px : parent.width - 4px;
@@ -769,6 +760,7 @@ export component LauncherWindow inherits Window {
 
                                                     HorizontalLayout {
                                                         padding-left: 28px;
+                                                        padding-right: 12px;
                                                         spacing: 16px;
                                                         Rectangle {
                                                             width: 24px;
@@ -796,8 +788,26 @@ export component LauncherWindow inherits Window {
                                                             font-size: 15px;
                                                             font-weight: 600;
                                                             height: parent.height;
+                                                            horizontal-stretch: 1;
                                                             vertical-alignment: center;
                                                             overflow: elide;
+                                                        }
+                                                        Rectangle {
+                                                            visible: app_shortcut != "";
+                                                            width: app_shortcut == "" ? 0px : 48px;
+                                                            height: 24px;
+                                                            border-radius: 12px;
+                                                            background: index == root.absolute_index ? #3e4451 : #30343c;
+                                                            Text {
+                                                                text: app_shortcut;
+                                                                color: #abb2bf;
+                                                                font-size: 10px;
+                                                                font-weight: 700;
+                                                                width: 100%;
+                                                                height: 100%;
+                                                                horizontal-alignment: center;
+                                                                vertical-alignment: center;
+                                                            }
                                                         }
                                                     }
                                                 }

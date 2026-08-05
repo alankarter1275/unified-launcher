@@ -82,8 +82,8 @@ Click the power icon (⏻) in the sidebar to toggle the power view:
 
 ### 4. Pinned applications
 
-When the app search is empty, the launcher shows six persistent app slots in a
-3-column × 2-row icon grid.
+When the app search is empty, the launcher shows six persistent app icons in a
+single horizontal row.
 
 | Shortcut | Action |
 |----------|--------|
@@ -91,8 +91,9 @@ When the app search is empty, the launcher shows six persistent app slots in a
 | `Ctrl+Alt+1` … `Ctrl+Alt+6` | Pin the highlighted or hovered app to the corresponding slot |
 
 Pins use stable desktop-entry IDs rather than display names, so duplicate app
-names do not make a shortcut ambiguous. Assigning an occupied slot replaces it
-immediately and shows an in-window confirmation.
+names do not make a shortcut ambiguous. Pinned entries show their `Alt+N`
+shortcut in a pill at the right end of the app list. Assigning an occupied slot
+replaces it immediately and shows an in-window confirmation.
 
 ### 5. Sidebar views
 
