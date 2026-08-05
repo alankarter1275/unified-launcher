@@ -286,7 +286,7 @@ export component LauncherWindow inherits Window {
         }
     }
 
-    public function shortcut_for_app(app_id: string) -> string {
+    pure function shortcut_for_app(app_id: string) -> string {
         if (root.pinned_items.length > 0 && root.pinned_items[0].app_id == app_id) { return root.pinned_items[0].shortcut; }
         if (root.pinned_items.length > 1 && root.pinned_items[1].app_id == app_id) { return root.pinned_items[1].shortcut; }
         if (root.pinned_items.length > 2 && root.pinned_items[2].app_id == app_id) { return root.pinned_items[2].shortcut; }
