@@ -31,6 +31,13 @@ use unified_launcher::types::{
 const POLKIT_AGENT_PATH: &str = "/org/freedesktop/PolicyKit1/AuthenticationAgent";
 const POLKIT_HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
 
+type DaemonActionPayload = (
+    String,
+    Option<QuickSettingsSnapshot>,
+    Option<Vec<FolderPin>>,
+);
+type DaemonActionResult = Result<DaemonActionPayload, String>;
+
 // --------------------------------------------------------
 // POLKIT AGENT INTERFACE
 // --------------------------------------------------------
@@ -491,14 +498,7 @@ async fn handle_client(
             }
         };
 
-        let result: Result<
-            (
-                String,
-                Option<QuickSettingsSnapshot>,
-                Option<Vec<FolderPin>>,
-            ),
-            String,
-        > = match request {
+        let result: DaemonActionResult = match request {
             ClientMessage::FolderPathSuggestions { path } => {
                 let response = match path_suggestions(&path) {
                     Ok(suggestions) => ServerMessage::FolderPathSuggestions { suggestions },
