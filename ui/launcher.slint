@@ -192,6 +192,146 @@ component PinButton inherits Rectangle {
     }
 }
 
+component QuickToggleCard inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> status;
+    in property <color> accent: #61afef;
+    in property <bool> active: false;
+    callback clicked;
+
+    height: 64px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: root.active ? root.accent : #3e4451;
+    background: root.active ? #2c323c : #252931;
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        spacing: 12px;
+
+        Text {
+            text: root.icon;
+            color: root.active ? root.accent : #abb2bf;
+            font-family: "JetBrainsMono Nerd Font Propo";
+            font-size: 23px;
+            width: 26px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.title;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 700;
+            }
+            Text {
+                text: root.status;
+                color: root.active ? root.accent : #5c6370;
+                font-size: 11px;
+                font-weight: 600;
+            }
+        }
+        Rectangle {
+            horizontal-stretch: 1;
+        }
+        Rectangle {
+            width: 34px;
+            height: 18px;
+            border-radius: 9px;
+            background: root.active ? root.accent : #3e4451;
+            Rectangle {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                x: root.active ? parent.width - self.width - 2px : 2px;
+                y: (parent.height - self.height) / 2;
+                background: #ffffff;
+                animate x { duration: 160ms; easing: ease-out; }
+            }
+        }
+    }
+
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component QuickActionButton inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    callback clicked;
+
+    height: 32px;
+    border-radius: 16px;
+    border-width: 1px;
+    border-color: #3e4451;
+    background: ta.has-hover ? #2c323c : #252931;
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 7px;
+        Text {
+            text: root.icon;
+            color: #61afef;
+            font-family: "JetBrainsMono Nerd Font Propo";
+            font-size: 14px;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.label;
+            color: #abb2bf;
+            font-size: 12px;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+component ProfileButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked;
+
+    height: 36px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.active ? #61afef : #3e4451;
+    background: root.active ? #2c323c : ta.has-hover ? #252931 : transparent;
+
+    Text {
+        text: root.label;
+        color: root.active ? #ffffff : #abb2bf;
+        font-size: 11px;
+        font-weight: 700;
+        width: 100%;
+        height: 100%;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
 component UtilityPlaceholder inherits Rectangle {
     in property <string> icon;
     in property <string> title;
@@ -251,6 +391,15 @@ export component LauncherWindow inherits Window {
     in property <string> ribbon_text: "Apps";
     in-out property <string> toast_message: "";
 
+    // Quick Settings state
+    in property <bool> wifi_enabled: false;
+    in property <string> wifi_status: "Unavailable";
+    in property <bool> bluetooth_enabled: false;
+    in property <string> bluetooth_status: "Unavailable";
+    in property <bool> idle_inhibited: false;
+    in property <bool> sleep_inhibited: false;
+    in property <string> power_profile: "unknown";
+
     // Calculator mode
     in property <bool> calc_mode: false;
     in property <string> calc_expression: "";
@@ -271,6 +420,13 @@ export component LauncherWindow inherits Window {
     callback launch_pinned_app(int);
     callback item_highlighted(int, int, string);
     callback power_action(string);
+    callback toggle_wifi();
+    callback toggle_bluetooth();
+    callback toggle_idle_inhibit();
+    callback toggle_sleep_inhibit();
+    callback set_power_profile(string);
+    callback open_wifi_manager();
+    callback open_bluetooth_manager();
     callback close_requested();
 
     public function focus_search() { search_input.focus(); }
@@ -881,21 +1037,132 @@ export component LauncherWindow inherits Window {
                         }
                     }
 
-                    // ====== FUTURE INLINE VIEWS ======
-                    UtilityPlaceholder {
-                        visible: root.current_view != "main" && root.current_view != "power";
+                    // ====== QUICK SETTINGS VIEW ======
+                    Rectangle {
+                        visible: root.current_view == "quick-settings";
                         width: 100%;
                         height: 100%;
-                        icon: root.current_view == "quick-settings" ? "󰒓" :
-                            root.current_view == "calendar" ? "󰃭" :
+
+                        VerticalLayout {
+                            padding: 18px;
+                            spacing: 10px;
+
+                            Text {
+                                text: "Quick Settings";
+                                color: #ffffff;
+                                font-size: 21px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: "Toggle radios and idle behavior, or open your preferred managers.";
+                                color: #5c6370;
+                                font-size: 12px;
+                            }
+
+                            GridLayout {
+                                spacing: 10px;
+                                Row {
+                                    QuickToggleCard {
+                                        icon: "󰖩";
+                                        title: "Wi-Fi";
+                                        status: root.wifi_status;
+                                        accent: #61afef;
+                                        active: root.wifi_enabled;
+                                        clicked => { root.toggle_wifi(); }
+                                    }
+                                    QuickToggleCard {
+                                        icon: "󰂯";
+                                        title: "Bluetooth";
+                                        status: root.bluetooth_status;
+                                        accent: #56b6c2;
+                                        active: root.bluetooth_enabled;
+                                        clicked => { root.toggle_bluetooth(); }
+                                    }
+                                }
+                                Row {
+                                    QuickToggleCard {
+                                        icon: "󰅶";
+                                        title: "Keep screen awake";
+                                        status: root.idle_inhibited ? "On" : "Off";
+                                        accent: #e5c07b;
+                                        active: root.idle_inhibited;
+                                        clicked => { root.toggle_idle_inhibit(); }
+                                    }
+                                    QuickToggleCard {
+                                        icon: "󰒲";
+                                        title: "Prevent suspend";
+                                        status: root.sleep_inhibited ? "On" : "Off";
+                                        accent: #c678dd;
+                                        active: root.sleep_inhibited;
+                                        clicked => { root.toggle_sleep_inhibit(); }
+                                    }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                QuickActionButton {
+                                    horizontal-stretch: 1;
+                                    icon: "󰖩";
+                                    label: "Open Impala";
+                                    clicked => { root.open_wifi_manager(); }
+                                }
+                                QuickActionButton {
+                                    horizontal-stretch: 1;
+                                    icon: "󰂯";
+                                    label: "Open bluetui";
+                                    clicked => { root.open_bluetooth_manager(); }
+                                }
+                            }
+
+                            Text {
+                                text: "TLP power profile";
+                                color: #abb2bf;
+                                font-size: 12px;
+                                font-weight: 700;
+                            }
+                            HorizontalLayout {
+                                spacing: 7px;
+                                ProfileButton {
+                                    horizontal-stretch: 1;
+                                    label: "Auto";
+                                    active: root.power_profile == "automatic";
+                                    clicked => { root.set_power_profile("automatic"); }
+                                }
+                                ProfileButton {
+                                    horizontal-stretch: 1;
+                                    label: "Performance";
+                                    active: root.power_profile == "performance";
+                                    clicked => { root.set_power_profile("performance"); }
+                                }
+                                ProfileButton {
+                                    horizontal-stretch: 1;
+                                    label: "Balanced";
+                                    active: root.power_profile == "balanced";
+                                    clicked => { root.set_power_profile("balanced"); }
+                                }
+                                ProfileButton {
+                                    horizontal-stretch: 1;
+                                    label: "Power saver";
+                                    active: root.power_profile == "power-saver";
+                                    clicked => { root.set_power_profile("power-saver"); }
+                                }
+                            }
+                        }
+                    }
+
+                    // ====== FUTURE INLINE VIEWS ======
+                    UtilityPlaceholder {
+                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "quick-settings";
+                        width: 100%;
+                        height: 100%;
+                        icon: root.current_view == "calendar" ? "󰃭" :
                             root.current_view == "notes" ? "󰎚" :
                             root.current_view == "folders" ? "󰉋" : "󰈞";
-                        title: root.current_view == "quick-settings" ? "Quick Settings" :
-                            root.current_view == "calendar" ? "Clock & Calendar" :
+                        title: root.current_view == "calendar" ? "Clock & Calendar" :
                             root.current_view == "notes" ? "Notes" :
                             root.current_view == "folders" ? "Folders" : "File Finder";
-                        description: root.current_view == "quick-settings" ? "Quick settings will arrive in the next phase." :
-                            root.current_view == "calendar" ? "A simple clock and calendar are planned for a later phase." :
+                        description: root.current_view == "calendar" ? "A simple clock and calendar are planned for a later phase." :
                             root.current_view == "notes" ? "Named local notes are planned for a later phase." :
                             root.current_view == "folders" ? "Pinned Yazi folders are planned for a later phase." :
                             "Fast filename and path search is planned for a later phase.";

@@ -102,6 +102,24 @@ Quick Settings, Clock & Calendar, Notes, Folders, and File Finder. Their content
 is introduced incrementally in later feature phases; the Power view remains
 fully available now.
 
+### 6. Quick Settings
+
+The Quick Settings view is intentionally small and Sway-oriented:
+
+| Control | Integration |
+|---------|-------------|
+| Wi-Fi toggle | `nmcli radio wifi on/off` |
+| Wi-Fi manager | `footclient -e impala` |
+| Bluetooth toggle | `bluetoothctl power on/off` |
+| Bluetooth manager | `footclient -e bluetui` |
+| Keep screen awake | `systemd-inhibit --what=idle` |
+| Prevent suspend | `systemd-inhibit --what=sleep` |
+| TLP profile | `pkexec tlp start`, `performance`, `balanced`, or `power-saver` |
+
+Successful and failed toggles send standard desktop notifications, which Dunst
+displays. Opening Impala or bluetui deliberately does not send a notification.
+TLP actions use PolKit through `pkexec`, so authentication may be requested.
+
 ## Sway Integration
 
 For proper overlay positioning, add this to your Sway config:

@@ -17,11 +17,13 @@ use unified_launcher::cache::{load_cache, save_cache};
 use unified_launcher::desktop::crawl_desktop_entries;
 use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_path};
 use unified_launcher::power::handle_power_action;
+use unified_launcher::quick_settings::{self, Inhibitors};
 use unified_launcher::state::{
     load as load_launcher_state, save as save_launcher_state, LauncherState, PIN_SLOT_COUNT,
 };
 use unified_launcher::types::{
-    json_line, AppEntry, AppInit, ClientMessage, DaemonState, ServerMessage,
+    json_line, AppEntry, AppInit, ClientMessage, DaemonState, QuickSettingsAction,
+    QuickSettingsSnapshot, ServerMessage,
 };
 
 const POLKIT_AGENT_PATH: &str = "/org/freedesktop/PolicyKit1/AuthenticationAgent";
@@ -324,9 +326,32 @@ async fn set_app_pin(
     Ok(format!("Pinned {app_name} to slot {}", slot_index + 1))
 }
 
-async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
+async fn handle_quick_settings_action(
+    state: &Arc<Mutex<DaemonState>>,
+    inhibitors: &Arc<Mutex<Inhibitors>>,
+    action: QuickSettingsAction,
+) -> Result<(String, QuickSettingsSnapshot), String> {
+    let mut snapshot = { state.lock().await.quick_settings.clone() };
+    let message = {
+        let mut inhibitors = inhibitors.lock().await;
+        quick_settings::execute(action, &mut snapshot, &mut inhibitors).await
+    }?;
+
+    state.lock().await.quick_settings = snapshot.clone();
+    Ok((message, snapshot))
+}
+
+async fn handle_client(
+    stream: UnixStream,
+    state: Arc<Mutex<DaemonState>>,
+    inhibitors: Arc<Mutex<Inhibitors>>,
+) {
     let (reader, mut writer) = stream.into_split();
-    let (apps, pinned_app_ids): (Vec<AppInit>, Vec<Option<String>>) = {
+    let (apps, pinned_app_ids, quick_settings): (
+        Vec<AppInit>,
+        Vec<Option<String>>,
+        QuickSettingsSnapshot,
+    ) = {
         let state = state.lock().await;
         let apps = state
             .apps
@@ -337,7 +362,11 @@ async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
                 icon: app.icon.clone(),
             })
             .collect();
-        (apps, state.launcher_state.pinned_apps.clone())
+        (
+            apps,
+            state.launcher_state.pinned_apps.clone(),
+            state.quick_settings.clone(),
+        )
     };
 
     if let Err(error) = write_server_message(
@@ -345,6 +374,7 @@ async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
         &ServerMessage::Init {
             apps,
             pinned_app_ids,
+            quick_settings,
         },
     )
     .await
@@ -383,7 +413,7 @@ async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
             }
         };
 
-        let result = match request {
+        let result: Result<(String, Option<QuickSettingsSnapshot>), String> = match request {
             ClientMessage::LaunchApp { app_id } => {
                 let app = {
                     let state = state.lock().await;
@@ -396,21 +426,32 @@ async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
                         .map_err(|error| format!("Could not launch {}: {error}", app.name)),
                     None => Err(format!("Unknown application id: {app_id}")),
                 }
+                .map(|message| (message, None))
             }
-            ClientMessage::SetAppPin { slot, app_id } => set_app_pin(&state, slot, app_id).await,
+            ClientMessage::SetAppPin { slot, app_id } => set_app_pin(&state, slot, app_id)
+                .await
+                .map(|message| (message, None)),
             ClientMessage::PowerAction { action } => handle_power_action(action)
                 .map(|()| "Power action started".to_string())
-                .map_err(|error| format!("Could not start power action: {error}")),
+                .map_err(|error| format!("Could not start power action: {error}"))
+                .map(|message| (message, None)),
+            ClientMessage::QuickSettings { action } => {
+                handle_quick_settings_action(&state, &inhibitors, action)
+                    .await
+                    .map(|(message, snapshot)| (message, Some(snapshot)))
+            }
         };
 
         let response = match result {
-            Ok(message) => ServerMessage::ActionResult {
+            Ok((message, quick_settings)) => ServerMessage::ActionResult {
                 success: true,
                 message,
+                quick_settings,
             },
             Err(message) => ServerMessage::ActionResult {
                 success: false,
                 message,
+                quick_settings: None,
             },
         };
         let _ = write_server_message(&mut writer, &response).await;
@@ -446,10 +487,13 @@ async fn main() {
             LauncherState::default()
         }
     };
+    let quick_settings = quick_settings::initial_snapshot().await;
     let state = Arc::new(Mutex::new(DaemonState {
         apps,
         launcher_state,
+        quick_settings,
     }));
+    let inhibitors = Arc::new(Mutex::new(Inhibitors::default()));
 
     // Keep a successful D-Bus connection alive for the lifetime of the daemon,
     // but never make PolKit availability a requirement for launching apps.
@@ -494,7 +538,8 @@ async fn main() {
         match listener.accept().await {
             Ok((stream, _address)) => {
                 let state = Arc::clone(&state);
-                tokio::spawn(handle_client(stream, state));
+                let inhibitors = Arc::clone(&inhibitors);
+                tokio::spawn(handle_client(stream, state, inhibitors));
             }
             Err(error) => error!("Launcher client connection failed: {error}"),
         }

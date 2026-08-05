@@ -15,7 +15,10 @@ use slint::{Image, ModelRc, SharedString, VecModel};
 
 use unified_launcher::paths::socket_path;
 use unified_launcher::state::PIN_SLOT_COUNT;
-use unified_launcher::types::{json_line, ClientMessage, PowerAction, ServerMessage};
+use unified_launcher::types::{
+    json_line, ClientMessage, PowerAction, PowerProfile, QuickSettingsAction,
+    QuickSettingsSnapshot, ServerMessage,
+};
 
 slint::include_modules!();
 
@@ -169,6 +172,44 @@ fn show_toast(ui: &LauncherWindow, message: impl Into<SharedString>) {
     ui.set_toast_message(message.into());
 }
 
+fn switch_status(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "On",
+        Some(false) => "Off",
+        None => "Unavailable",
+    }
+}
+
+fn apply_quick_settings(ui: &LauncherWindow, settings: &QuickSettingsSnapshot) {
+    ui.set_wifi_enabled(settings.wifi_enabled.unwrap_or(false));
+    ui.set_wifi_status(switch_status(settings.wifi_enabled).into());
+    ui.set_bluetooth_enabled(settings.bluetooth_enabled.unwrap_or(false));
+    ui.set_bluetooth_status(switch_status(settings.bluetooth_enabled).into());
+    ui.set_idle_inhibited(settings.idle_inhibited);
+    ui.set_sleep_inhibited(settings.sleep_inhibited);
+    ui.set_power_profile(settings.power_profile.as_ui_value().into());
+}
+
+fn handle_quick_settings_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::ActionResult {
+            message,
+            quick_settings,
+            ..
+        }) => {
+            if let Some(settings) = quick_settings {
+                apply_quick_settings(ui, &settings);
+            }
+            show_toast(ui, message);
+        }
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(ServerMessage::Init { .. }) => {
+            show_toast(ui, "Daemon returned an unexpected response");
+        }
+        Err(error) => show_toast(ui, format!("Quick Settings failed: {error}")),
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket_path()?;
     let stream = connect_or_start_daemon(&socket_path)?;
@@ -180,11 +221,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
     let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
-    let (apps, pinned_app_ids) = match initial_message {
+    let (apps, pinned_app_ids, quick_settings) = match initial_message {
         ServerMessage::Init {
             apps,
             pinned_app_ids,
-        } => (apps, pinned_app_ids),
+            quick_settings,
+        } => (apps, pinned_app_ids, quick_settings),
         ServerMessage::Error { message } => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
         }
@@ -219,6 +261,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let apps = Rc::new(app_items);
     ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps).clone()))));
     ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
+    apply_quick_settings(&ui, &quick_settings);
 
     let pin_slots: PinSlots = Rc::new(RefCell::new(resolve_pin_slots(&pinned_app_ids, &apps)));
     render_pins(&ui, &pin_slots.borrow());
@@ -387,6 +430,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(ServerMessage::ActionResult {
                 success: false,
                 message,
+                ..
             })
             | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
             Ok(ServerMessage::Init { .. }) => {
@@ -419,6 +463,107 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &writer_launch_pin,
             &ClientMessage::LaunchApp {
                 app_id: app.app_id.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_wifi = Arc::clone(&writer);
+    let reader_wifi = Arc::clone(&reader);
+    let ui_wifi = ui.as_weak();
+    ui.on_toggle_wifi(move || {
+        let ui = ui_wifi.unwrap();
+        let response = request_response(
+            &writer_wifi,
+            &reader_wifi,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleWifi,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_bluetooth = Arc::clone(&writer);
+    let reader_bluetooth = Arc::clone(&reader);
+    let ui_bluetooth = ui.as_weak();
+    ui.on_toggle_bluetooth(move || {
+        let ui = ui_bluetooth.unwrap();
+        let response = request_response(
+            &writer_bluetooth,
+            &reader_bluetooth,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleBluetooth,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_idle = Arc::clone(&writer);
+    let reader_idle = Arc::clone(&reader);
+    let ui_idle = ui.as_weak();
+    ui.on_toggle_idle_inhibit(move || {
+        let ui = ui_idle.unwrap();
+        let response = request_response(
+            &writer_idle,
+            &reader_idle,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleIdleInhibit,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_sleep = Arc::clone(&writer);
+    let reader_sleep = Arc::clone(&reader);
+    let ui_sleep = ui.as_weak();
+    ui.on_toggle_sleep_inhibit(move || {
+        let ui = ui_sleep.unwrap();
+        let response = request_response(
+            &writer_sleep,
+            &reader_sleep,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleSleepInhibit,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_profile = Arc::clone(&writer);
+    let reader_profile = Arc::clone(&reader);
+    let ui_profile = ui.as_weak();
+    ui.on_set_power_profile(move |profile| {
+        let ui = ui_profile.unwrap();
+        let Some(profile) = PowerProfile::parse(profile.as_str()) else {
+            show_toast(&ui, "Unknown power profile");
+            return;
+        };
+        let response = request_response(
+            &writer_profile,
+            &reader_profile,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::SetPowerProfile { profile },
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_impala = Arc::clone(&writer);
+    ui.on_open_wifi_manager(move || {
+        send_request(
+            &writer_impala,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::OpenWifiManager,
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_bluetui = Arc::clone(&writer);
+    ui.on_open_bluetooth_manager(move || {
+        send_request(
+            &writer_bluetui,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::OpenBluetoothManager,
             },
         );
         std::process::exit(0);

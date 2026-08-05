@@ -46,6 +46,84 @@ impl PowerAction {
     }
 }
 
+/// TLP profile choices exposed in Quick Settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PowerProfile {
+    Automatic,
+    Performance,
+    Balanced,
+    PowerSaver,
+    Unknown,
+}
+
+impl PowerProfile {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "automatic" => Some(Self::Automatic),
+            "performance" => Some(Self::Performance),
+            "balanced" => Some(Self::Balanced),
+            "power-saver" | "power_saver" => Some(Self::PowerSaver),
+            _ => None,
+        }
+    }
+
+    pub fn as_ui_value(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Performance => "performance",
+            Self::Balanced => "balanced",
+            Self::PowerSaver => "power-saver",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic",
+            Self::Performance => "Performance",
+            Self::Balanced => "Balanced",
+            Self::PowerSaver => "Power saver",
+            Self::Unknown => "Unavailable",
+        }
+    }
+}
+
+/// A serializable snapshot of Quick Settings state for the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuickSettingsSnapshot {
+    pub wifi_enabled: Option<bool>,
+    pub bluetooth_enabled: Option<bool>,
+    pub idle_inhibited: bool,
+    pub sleep_inhibited: bool,
+    pub power_profile: PowerProfile,
+}
+
+impl Default for QuickSettingsSnapshot {
+    fn default() -> Self {
+        Self {
+            wifi_enabled: None,
+            bluetooth_enabled: None,
+            idle_inhibited: false,
+            sleep_inhibited: false,
+            power_profile: PowerProfile::Unknown,
+        }
+    }
+}
+
+/// Actions available from the inline Quick Settings view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum QuickSettingsAction {
+    ToggleWifi,
+    ToggleBluetooth,
+    ToggleIdleInhibit,
+    ToggleSleepInhibit,
+    SetPowerProfile { profile: PowerProfile },
+    OpenWifiManager,
+    OpenBluetoothManager,
+}
+
 /// Commands a client can send to the per-user daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -53,6 +131,7 @@ pub enum ClientMessage {
     LaunchApp { app_id: String },
     SetAppPin { slot: u8, app_id: String },
     PowerAction { action: PowerAction },
+    QuickSettings { action: QuickSettingsAction },
 }
 
 /// Messages emitted by the daemon over the Unix socket.
@@ -62,10 +141,12 @@ pub enum ServerMessage {
     Init {
         apps: Vec<AppInit>,
         pinned_app_ids: Vec<Option<String>>,
+        quick_settings: QuickSettingsSnapshot,
     },
     ActionResult {
         success: bool,
         message: String,
+        quick_settings: Option<QuickSettingsSnapshot>,
     },
     Error {
         message: String,
@@ -77,6 +158,8 @@ pub struct DaemonState {
     pub apps: Vec<AppEntry>,
     /// Persistent user choices owned by the long-lived daemon.
     pub launcher_state: LauncherState,
+    /// Runtime Quick Settings state. Inhibitor process handles stay daemon-local.
+    pub quick_settings: QuickSettingsSnapshot,
 }
 
 /// Serialize a protocol message as one newline-delimited JSON record.
@@ -103,9 +186,9 @@ mod tests {
             ClientMessage::LaunchApp { app_id } => {
                 assert_eq!(app_id, "org.example.App.desktop");
             }
-            ClientMessage::SetAppPin { .. } | ClientMessage::PowerAction { .. } => {
-                panic!("decoded the wrong message variant")
-            }
+            ClientMessage::SetAppPin { .. }
+            | ClientMessage::PowerAction { .. }
+            | ClientMessage::QuickSettings { .. } => panic!("decoded the wrong message variant"),
         }
     }
 

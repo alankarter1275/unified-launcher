@@ -8,12 +8,14 @@
 //! - [`desktop`] — `.desktop` file crawling and icon resolution
 //! - [`cache`] — app cache persistence across restarts
 //! - [`power`] — system power/session actions
+//! - [`quick_settings`] — Sway-oriented Quick Settings integrations
 
 pub mod cache;
 pub mod desktop;
 pub mod error;
 pub mod paths;
 pub mod power;
+pub mod quick_settings;
 pub mod state;
 pub mod storage;
 pub mod types;
