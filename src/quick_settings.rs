@@ -1,8 +1,8 @@
 //! Sway-oriented Quick Settings integrations.
 //!
 //! These commands intentionally use direct, structured process invocations—no
-//! shell interpolation. The defaults target the user's stated tools: Network
-//! Manager/Impala, BlueZ/bluetui, Dunst, systemd, and TLP.
+//! shell interpolation. The defaults target the user's stated tools: iwd/Impala,
+//! BlueZ/bluetui, Dunst, systemd, and TLP.
 
 use std::process::{Command as StdCommand, Stdio};
 
@@ -62,13 +62,23 @@ fn notify(summary: &str, body: &str) {
     }
 }
 
+async fn wifi_device_state() -> Result<(String, bool), String> {
+    let output = run_output("iwctl", &["device", "list"]).await?;
+    output_text(&output)
+        .lines()
+        .find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            if fields.len() >= 5 && matches!(fields[2], "on" | "off") {
+                Some((fields[0].to_string(), fields[2] == "on"))
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| "iwd did not report a Wi-Fi device".to_string())
+}
+
 async fn wifi_state() -> Option<bool> {
-    let output = run_output("nmcli", &["radio", "wifi"]).await.ok()?;
-    match output_text(&output).to_ascii_lowercase().as_str() {
-        "enabled" => Some(true),
-        "disabled" => Some(false),
-        _ => None,
-    }
+    wifi_device_state().await.ok().map(|(_, enabled)| enabled)
 }
 
 async fn bluetooth_state() -> Option<bool> {
@@ -122,9 +132,14 @@ pub async fn initial_snapshot() -> QuickSettingsSnapshot {
 }
 
 async fn toggle_wifi(snapshot: &mut QuickSettingsSnapshot) -> Result<String, String> {
-    let enabled = !snapshot.wifi_enabled.unwrap_or(false);
+    let (device, current_state) = wifi_device_state().await?;
+    let enabled = !current_state;
     let mode = if enabled { "on" } else { "off" };
-    run_output("nmcli", &["radio", "wifi", mode]).await?;
+    run_output(
+        "iwctl",
+        &["device", &device, "set-property", "Powered", mode],
+    )
+    .await?;
     snapshot.wifi_enabled = Some(enabled);
 
     let message = format!("Wi-Fi {}", if enabled { "enabled" } else { "disabled" });

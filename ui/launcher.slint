@@ -239,19 +239,25 @@ component QuickToggleCard inherits Rectangle {
         Rectangle {
             horizontal-stretch: 1;
         }
+        // The layout cell fills the card; the actual switch is centered in it.
         Rectangle {
             width: 34px;
-            height: 18px;
-            border-radius: 9px;
-            background: root.active ? root.accent : #3e4451;
+            height: parent.height;
             Rectangle {
-                width: 14px;
-                height: 14px;
-                border-radius: 7px;
-                x: root.active ? parent.width - self.width - 2px : 2px;
+                width: 34px;
+                height: 18px;
                 y: (parent.height - self.height) / 2;
-                background: #ffffff;
-                animate x { duration: 160ms; easing: ease-out; }
+                border-radius: 9px;
+                background: root.active ? root.accent : #3e4451;
+                Rectangle {
+                    width: 14px;
+                    height: 14px;
+                    border-radius: 7px;
+                    x: root.active ? parent.width - self.width - 2px : 2px;
+                    y: (parent.height - self.height) / 2;
+                    background: #ffffff;
+                    animate x { duration: 160ms; easing: ease-out; }
+                }
             }
         }
     }

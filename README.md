@@ -108,7 +108,7 @@ The Quick Settings view is intentionally small and Sway-oriented:
 
 | Control | Integration |
 |---------|-------------|
-| Wi-Fi toggle | `nmcli radio wifi on/off` |
+| Wi-Fi toggle | `iwctl device <device> set-property Powered on/off` |
 | Wi-Fi manager | `footclient -e impala` |
 | Bluetooth toggle | `bluetoothctl power on/off` |
 | Bluetooth manager | `footclient -e bluetui` |
