@@ -14,9 +14,9 @@ use fuzzy_matcher::FuzzyMatcher;
 use slint::{Image, ModelRc, SharedString, VecModel};
 
 use unified_launcher::paths::socket_path;
-use unified_launcher::state::PIN_SLOT_COUNT;
+use unified_launcher::state::{FolderPin, PIN_SLOT_COUNT};
 use unified_launcher::types::{
-    json_line, ClientMessage, FolderPin, PowerAction, PowerProfile, QuickSettingsAction,
+    json_line, ClientMessage, PowerAction, PowerProfile, QuickSettingsAction,
     QuickSettingsSnapshot, ServerMessage,
 };
 

@@ -20,10 +20,11 @@ use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_p
 use unified_launcher::power::handle_power_action;
 use unified_launcher::quick_settings::{self, Inhibitors};
 use unified_launcher::state::{
-    load as load_launcher_state, save as save_launcher_state, LauncherState, PIN_SLOT_COUNT,
+    load as load_launcher_state, save as save_launcher_state, FolderPin, LauncherState,
+    PIN_SLOT_COUNT,
 };
 use unified_launcher::types::{
-    json_line, AppEntry, AppInit, ClientMessage, DaemonState, FolderPin, QuickSettingsAction,
+    json_line, AppEntry, AppInit, ClientMessage, DaemonState, QuickSettingsAction,
     QuickSettingsSnapshot, ServerMessage,
 };
 
