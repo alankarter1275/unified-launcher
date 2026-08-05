@@ -478,8 +478,8 @@ export component LauncherWindow inherits Window {
     in property <[FolderItem]> folder_items: [];
     in-out property <[string]> folder_suggestions: [];
     in-out property <bool> folder_form_visible: false;
-    in-out property <string> folder_name <=> folder_name_input.text;
-    in-out property <string> folder_path <=> folder_path_input.text;
+    in-out property <string> folder_name: "";
+    in-out property <string> folder_path: "";
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
     in-out property <string> toast_message: "";
@@ -539,7 +539,6 @@ export component LauncherWindow inherits Window {
         root.folder_path = "";
         root.folder_suggestions = [];
         root.folder_form_visible = true;
-        folder_name_input.focus();
     }
 
     public function cancel_folder_form() {
@@ -1332,6 +1331,7 @@ export component LauncherWindow inherits Window {
                                         border-color: folder_name_input.has-focus ? #61afef : #3e4451;
                                         background: #181a1f;
                                         folder_name_input := TextInput {
+                                            text <=> root.folder_name;
                                             width: 100%;
                                             height: 100%;
                                             vertical-alignment: center;
@@ -1362,6 +1362,7 @@ export component LauncherWindow inherits Window {
                                         border-color: folder_path_input.has-focus ? #61afef : #3e4451;
                                         background: #181a1f;
                                         folder_path_input := TextInput {
+                                            text <=> root.folder_path;
                                             width: 100%;
                                             height: 100%;
                                             vertical-alignment: center;
