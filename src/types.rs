@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::state::LauncherState;
+
 /// A fully resolved desktop entry with a stable desktop-entry identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppEntry {
@@ -49,6 +51,7 @@ impl PowerAction {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
     LaunchApp { app_id: String },
+    SetAppPin { slot: u8, app_id: String },
     PowerAction { action: PowerAction },
 }
 
@@ -56,14 +59,24 @@ pub enum ClientMessage {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServerMessage {
-    Init { apps: Vec<AppInit> },
-    ActionResult { success: bool, message: String },
-    Error { message: String },
+    Init {
+        apps: Vec<AppInit>,
+        pinned_app_ids: Vec<Option<String>>,
+    },
+    ActionResult {
+        success: bool,
+        message: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// The daemon's in-memory state.
 pub struct DaemonState {
     pub apps: Vec<AppEntry>,
+    /// Persistent user choices owned by the long-lived daemon.
+    pub launcher_state: LauncherState,
 }
 
 /// Serialize a protocol message as one newline-delimited JSON record.
@@ -90,7 +103,9 @@ mod tests {
             ClientMessage::LaunchApp { app_id } => {
                 assert_eq!(app_id, "org.example.App.desktop");
             }
-            ClientMessage::PowerAction { .. } => panic!("decoded the wrong message variant"),
+            ClientMessage::SetAppPin { .. } | ClientMessage::PowerAction { .. } => {
+                panic!("decoded the wrong message variant")
+            }
         }
     }
 

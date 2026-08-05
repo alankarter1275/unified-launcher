@@ -80,15 +80,26 @@ Click the power icon (⏻) in the sidebar to toggle the power view:
 > **Note:** These are optimized for **Sway**. If you use a different compositor/DE,
 > edit `handle_power_action()` in `src/bin/daemon.rs`.
 
-### 4. Sidebar quick-launch (Alt+1..5)
+### 4. Pinned applications
 
-| Key     | App                                                |
-|---------|----------------------------------------------------|
-| Alt+1   | Zen Browser                                        |
-| Alt+2   | MPV (pseudo-GUI mode)                              |
-| Alt+3   | Yazi file manager (in foot terminal)               |
-| Alt+4   | Btop system monitor (in foot terminal)             |
-| Alt+5   | Neovim (in foot terminal)                          |
+When the app search is empty, the launcher shows six persistent app slots in a
+3-column × 2-row icon grid.
+
+| Shortcut | Action |
+|----------|--------|
+| `Alt+1` … `Alt+6` | Launch the corresponding pinned app, even while searching |
+| `Ctrl+Alt+1` … `Ctrl+Alt+6` | Pin the highlighted or hovered app to the corresponding slot |
+
+Pins use stable desktop-entry IDs rather than display names, so duplicate app
+names do not make a shortcut ambiguous. Assigning an occupied slot replaces it
+immediately and shows an in-window confirmation.
+
+### 5. Sidebar views
+
+The five non-power sidebar buttons now switch between inline launcher views for
+Quick Settings, Clock & Calendar, Notes, Folders, and File Finder. Their content
+is introduced incrementally in later feature phases; the Power view remains
+fully available now.
 
 ## Sway Integration
 

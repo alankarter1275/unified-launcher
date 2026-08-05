@@ -17,6 +17,9 @@ use unified_launcher::cache::{load_cache, save_cache};
 use unified_launcher::desktop::crawl_desktop_entries;
 use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_path};
 use unified_launcher::power::handle_power_action;
+use unified_launcher::state::{
+    load as load_launcher_state, save as save_launcher_state, LauncherState, PIN_SLOT_COUNT,
+};
 use unified_launcher::types::{
     json_line, AppEntry, AppInit, ClientMessage, DaemonState, ServerMessage,
 };
@@ -293,11 +296,39 @@ fn launch_app(app: &AppEntry) -> io::Result<()> {
     }
 }
 
+async fn set_app_pin(
+    state: &Arc<Mutex<DaemonState>>,
+    slot: u8,
+    app_id: String,
+) -> Result<String, String> {
+    let slot_index = usize::from(slot);
+    if slot_index >= PIN_SLOT_COUNT {
+        return Err(format!("Invalid app-pin slot: {}", slot_index + 1));
+    }
+
+    let mut state = state.lock().await;
+    let app_name = state
+        .apps
+        .iter()
+        .find(|app| app.id == app_id)
+        .map(|app| app.name.clone())
+        .ok_or_else(|| format!("Unknown application id: {app_id}"))?;
+
+    state
+        .launcher_state
+        .set_pinned_app(slot_index, app_id)
+        .map_err(|error| format!("Could not update app pin: {error}"))?;
+    save_launcher_state(&state.launcher_state)
+        .map_err(|error| format!("Could not save app pins: {error}"))?;
+
+    Ok(format!("Pinned {app_name} to slot {}", slot_index + 1))
+}
+
 async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
     let (reader, mut writer) = stream.into_split();
-    let apps: Vec<AppInit> = {
+    let (apps, pinned_app_ids): (Vec<AppInit>, Vec<Option<String>>) = {
         let state = state.lock().await;
-        state
+        let apps = state
             .apps
             .iter()
             .map(|app| AppInit {
@@ -305,10 +336,19 @@ async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
                 name: app.name.clone(),
                 icon: app.icon.clone(),
             })
-            .collect()
+            .collect();
+        (apps, state.launcher_state.pinned_apps.clone())
     };
 
-    if let Err(error) = write_server_message(&mut writer, &ServerMessage::Init { apps }).await {
+    if let Err(error) = write_server_message(
+        &mut writer,
+        &ServerMessage::Init {
+            apps,
+            pinned_app_ids,
+        },
+    )
+    .await
+    {
         warn!("Could not initialize launcher client: {error}");
         return;
     }
@@ -357,6 +397,7 @@ async fn handle_client(stream: UnixStream, state: Arc<Mutex<DaemonState>>) {
                     None => Err(format!("Unknown application id: {app_id}")),
                 }
             }
+            ClientMessage::SetAppPin { slot, app_id } => set_app_pin(&state, slot, app_id).await,
             ClientMessage::PowerAction { action } => handle_power_action(action)
                 .map(|()| "Power action started".to_string())
                 .map_err(|error| format!("Could not start power action: {error}")),
@@ -398,7 +439,17 @@ async fn main() {
         }
         apps
     };
-    let state = Arc::new(Mutex::new(DaemonState { apps }));
+    let launcher_state = match load_launcher_state() {
+        Ok(state) => state,
+        Err(error) => {
+            warn!("Could not load launcher state; using defaults: {error}");
+            LauncherState::default()
+        }
+    };
+    let state = Arc::new(Mutex::new(DaemonState {
+        apps,
+        launcher_state,
+    }));
 
     // Keep a successful D-Bus connection alive for the lifetime of the daemon,
     // but never make PolKit availability a requirement for launching apps.

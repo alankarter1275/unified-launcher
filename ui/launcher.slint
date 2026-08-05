@@ -6,6 +6,15 @@ export struct AppItem {
     text_icon: string,
 }
 
+export struct PinItem {
+    app_id: string,
+    text: string,
+    shortcut: string,
+    has_native_icon: bool,
+    native_icon: image,
+    text_icon: string,
+}
+
 // --------------------------------------------------------
 // CUSTOM COMPONENTS
 // --------------------------------------------------------
@@ -15,7 +24,8 @@ component SidebarButton inherits Rectangle {
     in property <bool> is_active: false;
     callback clicked;
 
-    width: 54px; height: 54px;
+    width: 54px;
+    height: 54px;
     background: transparent;
 
     private property <string> icon_font: "JetBrainsMono Nerd Font Propo";
@@ -39,7 +49,10 @@ component SidebarButton inherits Rectangle {
             }
         ]
 
-        animate width, height { duration: 250ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+        animate width, height {
+            duration: 250ms;
+            easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
 
         Text {
             text: root.icon;
@@ -49,13 +62,18 @@ component SidebarButton inherits Rectangle {
             font-weight: root.is_active ? 700 : 400;
             horizontal-alignment: center;
             vertical-alignment: center;
-            width: 100%; height: 100%;
-            animate font-size { duration: 250ms; easing: cubic-bezier(0.34, 1.56, 0.64, 1); }
+            width: 100%;
+            height: 100%;
+            animate font-size {
+                duration: 250ms;
+                easing: cubic-bezier(0.34, 1.56, 0.64, 1);
+            }
         }
     }
 
     ta := TouchArea {
-        width: 100%; height: 100%;
+        width: 100%;
+        height: 100%;
         mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
@@ -76,25 +94,160 @@ component PowerButton inherits Rectangle {
     border-radius: 24px;
 
     ta := TouchArea {
-        width: 100%; height: 100%; mouse-cursor: pointer;
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
         clicked => { root.clicked(); }
     }
 
     Rectangle {
-        width: 100%; height: 100%;
+        width: 100%;
+        height: 100%;
         border-radius: 24px;
         background: root.bg;
+
         VerticalLayout {
-            alignment: center; spacing: 12px;
+            alignment: center;
+            spacing: 12px;
+
             Text {
-                text: root.icon; color: root.icon_color;
+                text: root.icon;
+                color: root.icon_color;
                 font-family: "JetBrainsMono Nerd Font Propo";
-                font-size: 40px; horizontal-alignment: center;
+                font-size: 40px;
+                horizontal-alignment: center;
             }
             Text {
-                text: root.label; color: root.is_focused ? #ffffff : #abb2bf;
-                font-size: 14px; font-weight: 600; horizontal-alignment: center;
+                text: root.label;
+                color: root.is_focused ? #ffffff : #abb2bf;
+                font-size: 14px;
+                font-weight: 600;
+                horizontal-alignment: center;
             }
+        }
+    }
+}
+
+// --------------------------------------------------------
+// PINNED APPLICATION BUTTON
+// --------------------------------------------------------
+component PinButton inherits Rectangle {
+    in property <string> app_id;
+    in property <string> shortcut;
+    in property <bool> has_native_icon: false;
+    in property <image> native_icon;
+    in property <string> text_icon: "+";
+    callback clicked(string);
+
+    private property <bool> is_empty: root.app_id == "";
+    private property <string> icon_font: "JetBrainsMono Nerd Font Propo";
+
+    width: 64px;
+    height: 54px;
+    border-radius: 14px;
+    border-width: 1px;
+    border-color: root.is_empty ? #30343c : #3e4451;
+    background: root.is_empty ? #1d2025 : #252931;
+
+    states [
+        hover when ta.has-hover: {
+            background: root.is_empty ? #252931 : #2c323c;
+            border-color: #61afef;
+            in {
+                animate background { duration: 120ms; }
+                animate border-color { duration: 120ms; }
+            }
+            out {
+                animate background { duration: 150ms; }
+                animate border-color { duration: 150ms; }
+            }
+        }
+    ]
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 1px;
+
+        Rectangle {
+            width: 27px;
+            height: 28px;
+
+            if root.has_native_icon: Image {
+                source: root.native_icon;
+                width: 27px;
+                height: 27px;
+                image-fit: contain;
+            }
+            if !root.has_native_icon: Text {
+                text: root.text_icon;
+                color: root.is_empty ? #5c6370 : #61afef;
+                font-family: root.icon_font;
+                font-size: root.is_empty ? 21px : 22px;
+                width: 100%;
+                height: 100%;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        Text {
+            text: root.shortcut;
+            color: root.is_empty ? #5c6370 : #abb2bf;
+            font-size: 10px;
+            font-weight: 600;
+            horizontal-alignment: center;
+        }
+    }
+
+    ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => {
+            if (!root.is_empty) {
+                root.clicked(root.app_id);
+            }
+        }
+    }
+}
+
+component UtilityPlaceholder inherits Rectangle {
+    in property <string> icon;
+    in property <string> title;
+    in property <string> description;
+
+    background: transparent;
+
+    VerticalLayout {
+        alignment: center;
+        spacing: 12px;
+
+        Text {
+            text: root.icon;
+            color: #61afef;
+            font-family: "JetBrainsMono Nerd Font Propo";
+            font-size: 52px;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.title;
+            color: #ffffff;
+            font-size: 22px;
+            font-weight: 700;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.description;
+            color: #abb2bf;
+            font-size: 14px;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: "Esc to return to apps";
+            color: #5c6370;
+            font-size: 12px;
+            horizontal-alignment: center;
         }
     }
 }
@@ -112,8 +265,10 @@ export component LauncherWindow inherits Window {
     in-out property <string> current_view: "main";
     in-out property <string> search_text <=> search_input.text;
     in property <[AppItem]> display_items: [];
+    in property <[PinItem]> pinned_items: [];
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
+    in-out property <string> toast_message: "";
 
     // Calculator mode
     in property <bool> calc_mode: false;
@@ -131,13 +286,24 @@ export component LauncherWindow inherits Window {
     callback text_changed(string);
     callback clear_search();
     callback execute_selected(string, bool);
+    callback pin_app_requested(string, int);
+    callback launch_pinned_app(int);
     callback item_highlighted(int, int, string);
-    callback sidebar_action(int);
     callback power_action(string);
     callback close_requested();
 
     public function focus_search() { search_input.focus(); }
-    init => { root.focus_search(); }
+
+    public function show_main() {
+        root.current_view = "main";
+        root.focus_search();
+    }
+
+    public function pin_current_app(slot: int) {
+        if (root.display_items.length > 0) {
+            root.pin_app_requested(root.display_items[root.absolute_index].app_id, slot);
+        }
+    }
 
     public function adjust_scroll() {
         if (root.display_items.length == 0) { return; }
@@ -149,19 +315,27 @@ export component LauncherWindow inherits Window {
             let view_top = -list_flickable.viewport-y;
             let view_bottom = view_top + list_flickable.height;
 
-            if (item_top < view_top) { list_flickable.viewport-y = -item_top; }
-            else if (item_bottom > view_bottom) { list_flickable.viewport-y = -(item_bottom - list_flickable.height); }
+            if (item_top < view_top) {
+                list_flickable.viewport-y = -item_top;
+            } else if (item_bottom > view_bottom) {
+                list_flickable.viewport-y = -(item_bottom - list_flickable.height);
+            }
         }
-        root.item_highlighted(root.absolute_index, root.display_items.length, root.display_items[root.absolute_index].text);
+        root.item_highlighted(
+            root.absolute_index,
+            root.display_items.length,
+            root.display_items[root.absolute_index].text,
+        );
     }
+
+    init => { root.focus_search(); }
 
     FocusScope {
         key-pressed(event) => {
             // ---- POWER VIEW KEYS ----
             if (root.current_view == "power") {
                 if (event.text == Key.Escape) {
-                    root.current_view = "main";
-                    root.focus_search();
+                    root.show_main();
                     return accept;
                 }
                 if (event.text == Key.LeftArrow) {
@@ -190,158 +364,368 @@ export component LauncherWindow inherits Window {
                 return reject;
             }
 
-            // ---- CALCULATOR MODE KEYS ----
-            if (root.calc_mode) {
-                if (event.text == Key.Escape) { root.close_requested(); return accept; }
-                if (event.text == Key.Return) {
-                    if (root.calc_result != "") { root.execute_selected(root.calc_result, false); }
+            // ---- FUTURE INLINE VIEWS ----
+            if (root.current_view != "main") {
+                if (event.text == Key.Escape) {
+                    root.show_main();
                     return accept;
                 }
                 return reject;
             }
 
+            // ---- CALCULATOR MODE KEYS ----
+            if (root.calc_mode) {
+                if (event.text == Key.Escape) {
+                    root.close_requested();
+                    return accept;
+                }
+                if (event.text == Key.Return) {
+                    if (root.calc_result != "") {
+                        root.execute_selected(root.calc_result, false);
+                    }
+                    return accept;
+                }
+                return reject;
+            }
+
+            // ---- PIN SHORTCUTS ----
+            if (event.modifiers.control && event.modifiers.alt) {
+                if (event.text == "1") { root.pin_current_app(0); return accept; }
+                if (event.text == "2") { root.pin_current_app(1); return accept; }
+                if (event.text == "3") { root.pin_current_app(2); return accept; }
+                if (event.text == "4") { root.pin_current_app(3); return accept; }
+                if (event.text == "5") { root.pin_current_app(4); return accept; }
+                if (event.text == "6") { root.pin_current_app(5); return accept; }
+            }
+            if (event.modifiers.alt) {
+                if (event.text == "1") { root.launch_pinned_app(0); return accept; }
+                if (event.text == "2") { root.launch_pinned_app(1); return accept; }
+                if (event.text == "3") { root.launch_pinned_app(2); return accept; }
+                if (event.text == "4") { root.launch_pinned_app(3); return accept; }
+                if (event.text == "5") { root.launch_pinned_app(4); return accept; }
+                if (event.text == "6") { root.launch_pinned_app(5); return accept; }
+            }
+
             // ---- MAIN VIEW KEYS ----
-            if (event.text == Key.Escape) { root.close_requested(); return accept; }
+            if (event.text == Key.Escape) {
+                root.close_requested();
+                return accept;
+            }
             if (event.text == Key.Return) {
-                if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].app_id, event.modifiers.shift); }
+                if (root.display_items.length > 0) {
+                    root.execute_selected(
+                        root.display_items[root.absolute_index].app_id,
+                        event.modifiers.shift,
+                    );
+                }
                 return accept;
             }
             if (event.text == Key.UpArrow) {
-                if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); }
+                if (root.absolute_index > 0) {
+                    root.absolute_index -= 1;
+                    root.adjust_scroll();
+                }
                 return accept;
             }
             if (event.text == Key.DownArrow) {
-                if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); }
+                if (root.absolute_index < root.display_items.length - 1) {
+                    root.absolute_index += 1;
+                    root.adjust_scroll();
+                }
                 return accept;
             }
             return reject;
         }
 
         Rectangle {
-            border-radius: 16px; border-width: 1px; border-color: #3e4451; background: #181a1f;
+            border-radius: 16px;
+            border-width: 1px;
+            border-color: #3e4451;
+            background: #181a1f;
 
             HorizontalLayout {
-                padding-left: 12px; padding-right: 1px; padding-top: 1px; padding-bottom: 1px; spacing: 16px;
+                padding-left: 12px;
+                padding-right: 1px;
+                padding-top: 1px;
+                padding-bottom: 1px;
+                spacing: 16px;
 
                 // --- Sidebar ---
                 VerticalLayout {
-                    width: 54px; alignment: center; padding-top: 12px; padding-bottom: 12px;
+                    width: 54px;
+                    alignment: center;
+                    padding-top: 12px;
+                    padding-bottom: 12px;
 
                     VerticalLayout {
                         spacing: 12px;
 
-                        SidebarButton { icon: "󰈹"; clicked => { root.sidebar_action(1); } }
-                        SidebarButton { icon: ""; clicked => { root.sidebar_action(2); } }
-                        SidebarButton { icon: "󰟒"; clicked => { root.sidebar_action(3); } }
-                        SidebarButton { icon: ""; clicked => { root.sidebar_action(4); } }
-                        SidebarButton { icon: ""; clicked => { root.sidebar_action(5); } }
-
+                        SidebarButton {
+                            icon: "󰒓";
+                            icon_color: #61afef;
+                            is_active: root.current_view == "quick-settings";
+                            clicked => {
+                                if (root.current_view == "quick-settings") {
+                                    root.show_main();
+                                } else {
+                                    root.current_view = "quick-settings";
+                                }
+                            }
+                        }
+                        SidebarButton {
+                            icon: "󰃭";
+                            icon_color: #e5c07b;
+                            is_active: root.current_view == "calendar";
+                            clicked => {
+                                if (root.current_view == "calendar") {
+                                    root.show_main();
+                                } else {
+                                    root.current_view = "calendar";
+                                }
+                            }
+                        }
+                        SidebarButton {
+                            icon: "󰎚";
+                            icon_color: #c678dd;
+                            is_active: root.current_view == "notes";
+                            clicked => {
+                                if (root.current_view == "notes") {
+                                    root.show_main();
+                                } else {
+                                    root.current_view = "notes";
+                                }
+                            }
+                        }
+                        SidebarButton {
+                            icon: "󰉋";
+                            icon_color: #98c379;
+                            is_active: root.current_view == "folders";
+                            clicked => {
+                                if (root.current_view == "folders") {
+                                    root.show_main();
+                                } else {
+                                    root.current_view = "folders";
+                                }
+                            }
+                        }
+                        SidebarButton {
+                            icon: "󰈞";
+                            icon_color: #56b6c2;
+                            is_active: root.current_view == "files";
+                            clicked => {
+                                if (root.current_view == "files") {
+                                    root.show_main();
+                                } else {
+                                    root.current_view = "files";
+                                }
+                            }
+                        }
                         SidebarButton {
                             icon: "⏻";
                             icon_color: #e06c75;
                             is_active: root.current_view == "power";
-                            clicked => { root.current_view = root.current_view == "power" ? "main" : "power"; }
+                            clicked => {
+                                root.current_view = root.current_view == "power" ? "main" : "power";
+                            }
                         }
                     }
                 }
 
                 // --- Main content area ---
                 Rectangle {
-                    horizontal-stretch: 1; background: #21252b; border-radius: 15px; clip: true;
+                    horizontal-stretch: 1;
+                    background: #21252b;
+                    border-radius: 15px;
+                    clip: true;
 
                     // ====== MAIN VIEW ======
                     VerticalLayout {
                         visible: root.current_view == "main";
-                        padding: 12px; spacing: 8px;
+                        padding: 12px;
+                        spacing: 8px;
 
-                        // --- Search bar (left-aligned) ---
+                        // --- Search bar ---
                         HorizontalLayout {
-                            height: 40px; spacing: 12px;
+                            height: 40px;
+                            spacing: 12px;
 
-                            // Always shows > arrow
-                            Text { text: ""; color: #61afef; font-family: root.icon_font; font-size: 18px; vertical-alignment: center; }
-
+                            Text {
+                                text: "";
+                                color: #61afef;
+                                font-family: root.icon_font;
+                                font-size: 18px;
+                                vertical-alignment: center;
+                            }
 
                             Rectangle {
                                 horizontal-stretch: 1;
+
                                 Text {
-                                    width: 100%; height: 100%; vertical-alignment: center;
-                                    horizontal-alignment: left; font-size: 18px;
-                                    color: #5c6370; text: search_input.text == "" ? "Search apps..." : "";
+                                    width: 100%;
+                                    height: 100%;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
+                                    font-size: 18px;
+                                    color: #5c6370;
+                                    text: search_input.text == "" ? "Search apps..." : "";
                                 }
+
                                 search_input := TextInput {
-                                    width: 100%; height: 100%; vertical-alignment: center;
-                                    horizontal-alignment: left; font-size: 18px; color: #abb2bf;
+                                    width: 100%;
+                                    height: 100%;
+                                    vertical-alignment: center;
+                                    horizontal-alignment: left;
+                                    font-size: 18px;
+                                    color: #abb2bf;
                                     single-line: true;
                                     edited => { root.text_changed(self.text); }
                                     key-pressed(event) => {
-                                        if (event.text == "1" && event.modifiers.alt) { root.sidebar_action(1); return accept; }
-                                        if (event.text == "2" && event.modifiers.alt) { root.sidebar_action(2); return accept; }
-                                        if (event.text == "3" && event.modifiers.alt) { root.sidebar_action(3); return accept; }
-                                        if (event.text == "4" && event.modifiers.alt) { root.sidebar_action(4); return accept; }
-                                        if (event.text == "5" && event.modifiers.alt) { root.sidebar_action(5); return accept; }
-                                        if (event.text == Key.DownArrow) { if (root.absolute_index < root.display_items.length - 1) { root.absolute_index += 1; root.adjust_scroll(); } return accept; }
-                                        if (event.text == Key.UpArrow) { if (root.absolute_index > 0) { root.absolute_index -= 1; root.adjust_scroll(); } return accept; }
-                                        if (event.text == Key.Return) { if (root.display_items.length > 0) { root.execute_selected(root.display_items[root.absolute_index].app_id, event.modifiers.shift); } return accept; }
-                                        if (event.text == Key.Escape) { root.close_requested(); return accept; }
+                                        if (event.modifiers.control && event.modifiers.alt) {
+                                            if (event.text == "1") { root.pin_current_app(0); return accept; }
+                                            if (event.text == "2") { root.pin_current_app(1); return accept; }
+                                            if (event.text == "3") { root.pin_current_app(2); return accept; }
+                                            if (event.text == "4") { root.pin_current_app(3); return accept; }
+                                            if (event.text == "5") { root.pin_current_app(4); return accept; }
+                                            if (event.text == "6") { root.pin_current_app(5); return accept; }
+                                        }
+                                        if (event.modifiers.alt) {
+                                            if (event.text == "1") { root.launch_pinned_app(0); return accept; }
+                                            if (event.text == "2") { root.launch_pinned_app(1); return accept; }
+                                            if (event.text == "3") { root.launch_pinned_app(2); return accept; }
+                                            if (event.text == "4") { root.launch_pinned_app(3); return accept; }
+                                            if (event.text == "5") { root.launch_pinned_app(4); return accept; }
+                                            if (event.text == "6") { root.launch_pinned_app(5); return accept; }
+                                        }
+                                        if (event.text == Key.DownArrow) {
+                                            if (root.absolute_index < root.display_items.length - 1) {
+                                                root.absolute_index += 1;
+                                                root.adjust_scroll();
+                                            }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.UpArrow) {
+                                            if (root.absolute_index > 0) {
+                                                root.absolute_index -= 1;
+                                                root.adjust_scroll();
+                                            }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.Return) {
+                                            if (root.display_items.length > 0) {
+                                                root.execute_selected(
+                                                    root.display_items[root.absolute_index].app_id,
+                                                    event.modifiers.shift,
+                                                );
+                                            }
+                                            return accept;
+                                        }
+                                        if (event.text == Key.Escape) {
+                                            root.close_requested();
+                                            return accept;
+                                        }
                                         return reject;
                                     }
                                 }
                             }
 
-                            // Clear button — fills full 40px height, circle centered inside it
                             Rectangle {
                                 visible: search_input.text != "";
                                 width: 26px;
-                                VerticalLayout { alignment: center;
+
+                                VerticalLayout {
+                                    alignment: center;
                                     Rectangle {
-                                        width: 26px; height: 26px; border-radius: 13px;
+                                        width: 26px;
+                                        height: 26px;
+                                        border-radius: 13px;
                                         background: ta_clear.has-hover ? #3e4451 : transparent;
                                         ta_clear := TouchArea {
-                                            width: 100%; height: 100%; mouse-cursor: pointer;
+                                            width: 100%;
+                                            height: 100%;
+                                            mouse-cursor: pointer;
                                             clicked => { root.clear_search(); }
                                         }
                                         Text {
-                                            text: "✕"; color: #5c6370;
-                                            font-size: 13px; width: 100%; height: 100%;
-                                            horizontal-alignment: center; vertical-alignment: center;
+                                            text: "✕";
+                                            color: #5c6370;
+                                            font-size: 13px;
+                                            width: 100%;
+                                            height: 100%;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
                                         }
                                     }
                                 }
                             }
 
-                            // Ribbon label — pill-shaped CALC badge in calc mode, plain text otherwise
                             Rectangle {
                                 border-radius: root.calc_mode ? 12px : 0px;
                                 background: root.calc_mode ? #2c323c : transparent;
-                                VerticalLayout { alignment: center; padding-left: root.calc_mode ? 10px : 0px; padding-right: root.calc_mode ? 10px : 0px;
+                                VerticalLayout {
+                                    alignment: center;
+                                    padding-left: root.calc_mode ? 10px : 0px;
+                                    padding-right: root.calc_mode ? 10px : 0px;
                                     Text {
                                         text: root.calc_mode ? "CALC" : root.ribbon_text;
                                         color: root.calc_mode ? #abb2bf : #5c6370;
-                                        font-size: 13px; font-weight: 600;
+                                        font-size: 13px;
+                                        font-weight: 600;
                                         vertical-alignment: center;
                                     }
                                 }
                             }
                         }
 
+                        // --- Pinned apps: 3 columns × 2 rows ---
+                        pinned_area := Rectangle {
+                            visible: root.search_text == "" && !root.calc_mode;
+                            height: root.search_text == "" && !root.calc_mode ? 112px : 0px;
+                            width: 100%;
+                            clip: true;
+
+                            for pin[index] in root.pinned_items: PinButton {
+                                x: mod(index, 3) * (parent.width / 3) + (parent.width / 3 - self.width) / 2;
+                                y: floor(index / 3) * 58px;
+                                app_id: pin.app_id;
+                                shortcut: pin.shortcut;
+                                has_native_icon: pin.has_native_icon;
+                                native_icon: pin.native_icon;
+                                text_icon: pin.text_icon;
+                                clicked(app_id) => { root.execute_selected(app_id, false); }
+                            }
+                        }
+
                         // --- Content area: App list or Calculator ---
-                        Rectangle { vertical-stretch: 1; clip: true;
+                        Rectangle {
+                            vertical-stretch: 1;
+                            clip: true;
 
                             // ===== APP LIST =====
                             Rectangle {
                                 visible: !root.calc_mode;
-                                width: 100%; height: 100%;
+                                width: 100%;
+                                height: 100%;
 
                                 list_container := Rectangle {
-                                    width: 100%; height: 100%; clip: true; border-radius: 12px; background: transparent;
+                                    width: 100%;
+                                    height: 100%;
+                                    clip: true;
+                                    border-radius: 12px;
+                                    background: transparent;
+
                                     list_flickable := Flickable {
-                                        width: 100%; height: 100%; interactive: true; viewport-height: inner_layout.preferred-height;
+                                        width: 100%;
+                                        height: 100%;
+                                        interactive: true;
+                                        viewport-height: inner_layout.preferred-height;
+
                                         inner_layout := VerticalLayout {
-                                            width: list_container.width; alignment: start;
+                                            width: list_container.width;
+                                            alignment: start;
 
                                             for item[index] in root.display_items: Rectangle {
-                                                height: root.item_height; width: list_container.width;
+                                                height: root.item_height;
+                                                width: list_container.width;
 
                                                 pill := Rectangle {
                                                     width: item_ta.pressed ? parent.width - 8px : parent.width - 4px;
@@ -354,7 +738,9 @@ export component LauncherWindow inherits Window {
                                                     indicator := Rectangle {
                                                         x: 4px;
                                                         y: (parent.height - 16px) / 2;
-                                                        width: 4px; height: 16px; border-radius: 2px;
+                                                        width: 4px;
+                                                        height: 16px;
+                                                        border-radius: 2px;
                                                         background: transparent;
                                                     }
 
@@ -382,19 +768,54 @@ export component LauncherWindow inherits Window {
                                                     ]
 
                                                     HorizontalLayout {
-                                                        padding-left: 28px; spacing: 16px;
+                                                        padding-left: 28px;
+                                                        spacing: 16px;
                                                         Rectangle {
-                                                            width: 24px; height: parent.height;
-                                                            if item.has_native_icon: Image { source: item.native_icon; width: 24px; height: 24px; image-fit: contain; }
-                                                            if !item.has_native_icon: Text { text: item.text_icon; font-family: root.icon_font; color: index == root.absolute_index ? #61afef : #abb2bf; font-size: 20px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                                                            width: 24px;
+                                                            height: parent.height;
+                                                            if item.has_native_icon: Image {
+                                                                source: item.native_icon;
+                                                                width: 24px;
+                                                                height: 24px;
+                                                                image-fit: contain;
+                                                            }
+                                                            if !item.has_native_icon: Text {
+                                                                text: item.text_icon;
+                                                                font-family: root.icon_font;
+                                                                color: index == root.absolute_index ? #61afef : #abb2bf;
+                                                                font-size: 20px;
+                                                                width: 100%;
+                                                                height: 100%;
+                                                                horizontal-alignment: center;
+                                                                vertical-alignment: center;
+                                                            }
                                                         }
-                                                        Text { text: item.text; color: index == root.absolute_index ? #ffffff : #abb2bf; font-size: 15px; font-weight: 600; height: parent.height; vertical-alignment: center; overflow: elide; }
+                                                        Text {
+                                                            text: item.text;
+                                                            color: index == root.absolute_index ? #ffffff : #abb2bf;
+                                                            font-size: 15px;
+                                                            font-weight: 600;
+                                                            height: parent.height;
+                                                            vertical-alignment: center;
+                                                            overflow: elide;
+                                                        }
                                                     }
                                                 }
 
                                                 item_ta := TouchArea {
-                                                    width: 100%; height: 100%; mouse-cursor: pointer;
-                                                    clicked => { root.absolute_index = index; root.execute_selected(item.app_id, false); }
+                                                    width: 100%;
+                                                    height: 100%;
+                                                    mouse-cursor: pointer;
+                                                    changed has-hover => {
+                                                        if (self.has-hover) {
+                                                            root.absolute_index = index;
+                                                            root.adjust_scroll();
+                                                        }
+                                                    }
+                                                    clicked => {
+                                                        root.absolute_index = index;
+                                                        root.execute_selected(item.app_id, false);
+                                                    }
                                                 }
                                             }
                                         }
@@ -405,10 +826,12 @@ export component LauncherWindow inherits Window {
                             // ===== CALCULATOR DISPLAY =====
                             Rectangle {
                                 visible: root.calc_mode;
-                                width: 100%; height: 100%;
+                                width: 100%;
+                                height: 100%;
 
                                 VerticalLayout {
-                                    width: 100%; height: 100%;
+                                    width: 100%;
+                                    height: 100%;
                                     alignment: center;
                                     spacing: 4px;
 
@@ -440,33 +863,64 @@ export component LauncherWindow inherits Window {
                         }
                     }
 
+                    // ====== FUTURE INLINE VIEWS ======
+                    UtilityPlaceholder {
+                        visible: root.current_view != "main" && root.current_view != "power";
+                        width: 100%;
+                        height: 100%;
+                        icon: root.current_view == "quick-settings" ? "󰒓" :
+                            root.current_view == "calendar" ? "󰃭" :
+                            root.current_view == "notes" ? "󰎚" :
+                            root.current_view == "folders" ? "󰉋" : "󰈞";
+                        title: root.current_view == "quick-settings" ? "Quick Settings" :
+                            root.current_view == "calendar" ? "Clock & Calendar" :
+                            root.current_view == "notes" ? "Notes" :
+                            root.current_view == "folders" ? "Folders" : "File Finder";
+                        description: root.current_view == "quick-settings" ? "Quick settings will arrive in the next phase." :
+                            root.current_view == "calendar" ? "A simple clock and calendar are planned for a later phase." :
+                            root.current_view == "notes" ? "Named local notes are planned for a later phase." :
+                            root.current_view == "folders" ? "Pinned Yazi folders are planned for a later phase." :
+                            "Fast filename and path search is planned for a later phase.";
+                    }
+
                     // ====== POWER VIEW ======
                     GridLayout {
-                        visible: root.current_view == "power"; padding: 24px; spacing: 24px; vertical-stretch: 1;
+                        visible: root.current_view == "power";
+                        padding: 24px;
+                        spacing: 24px;
+                        vertical-stretch: 1;
                         Row {
                             PowerButton {
-                                icon: "󰌾"; label: "Lock";
-                                icon_color: #e5c07b; bg: #3e4451;
+                                icon: "󰌾";
+                                label: "Lock";
+                                icon_color: #e5c07b;
+                                bg: #3e4451;
                                 is_focused: root.power_index == 0;
                                 clicked => { root.power_action("lock"); }
                             }
                             PowerButton {
-                                icon: "󰐥"; label: "Shutdown";
-                                icon_color: #e06c75; bg: #4b2a2e;
+                                icon: "󰐥";
+                                label: "Shutdown";
+                                icon_color: #e06c75;
+                                bg: #4b2a2e;
                                 is_focused: root.power_index == 1;
                                 clicked => { root.power_action("shutdown"); }
                             }
                         }
                         Row {
                             PowerButton {
-                                icon: "󰍃"; label: "Logout";
-                                icon_color: #56b6c2; bg: #2c323c;
+                                icon: "󰍃";
+                                label: "Logout";
+                                icon_color: #56b6c2;
+                                bg: #2c323c;
                                 is_focused: root.power_index == 2;
                                 clicked => { root.power_action("logout"); }
                             }
                             PowerButton {
-                                icon: "󰜉"; label: "Reboot";
-                                icon_color: #98c379; bg: #3e4451;
+                                icon: "󰜉";
+                                label: "Reboot";
+                                icon_color: #98c379;
+                                bg: #3e4451;
                                 is_focused: root.power_index == 3;
                                 clicked => { root.power_action("reboot"); }
                             }
@@ -474,6 +928,36 @@ export component LauncherWindow inherits Window {
                     }
                 }
             }
+
+            toast := Rectangle {
+                visible: root.toast_message != "";
+                width: 300px;
+                height: 34px;
+                x: (parent.width - self.width) / 2;
+                y: parent.height - self.height - 16px;
+                border-radius: 17px;
+                border-width: 1px;
+                border-color: #3e4451;
+                background: #2c323c;
+
+                Text {
+                    text: root.toast_message;
+                    color: #ffffff;
+                    font-size: 12px;
+                    font-weight: 600;
+                    width: 100%;
+                    height: 100%;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    overflow: elide;
+                }
+            }
+        }
+
+        toast_timer := Timer {
+            interval: 1800ms;
+            running: root.toast_message != "";
+            triggered => { root.toast_message = ""; }
         }
     }
 }

@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::env;
 use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -13,9 +14,12 @@ use fuzzy_matcher::FuzzyMatcher;
 use slint::{Image, ModelRc, SharedString, VecModel};
 
 use unified_launcher::paths::socket_path;
+use unified_launcher::state::PIN_SLOT_COUNT;
 use unified_launcher::types::{json_line, ClientMessage, PowerAction, ServerMessage};
 
 slint::include_modules!();
+
+type PinSlots = Rc<RefCell<Vec<Option<AppItem>>>>;
 
 /// Connect to the daemon, starting it only when it is genuinely unavailable.
 fn connect_or_start_daemon(socket_path: &Path) -> io::Result<UnixStream> {
@@ -68,28 +72,46 @@ fn connect_or_start_daemon(socket_path: &Path) -> io::Result<UnixStream> {
     ))
 }
 
-fn send_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) {
-    let payload = match json_line(request) {
-        Ok(payload) => payload,
-        Err(error) => {
-            eprintln!("[Client] Could not encode daemon request: {error}");
-            return;
-        }
-    };
+fn encode_request(request: &ClientMessage) -> io::Result<String> {
+    json_line(request).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
 
-    let mut stream = match writer.lock() {
-        Ok(stream) => stream,
-        Err(_) => {
-            eprintln!("[Client] Daemon writer lock was poisoned.");
-            return;
-        }
-    };
-    if let Err(error) = stream
-        .write_all(payload.as_bytes())
-        .and_then(|()| stream.flush())
-    {
+fn write_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) -> io::Result<()> {
+    let payload = encode_request(request)?;
+    let mut stream = writer.lock().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon writer lock was poisoned",
+        )
+    })?;
+    stream.write_all(payload.as_bytes())?;
+    stream.flush()
+}
+
+fn send_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) {
+    if let Err(error) = write_request(writer, request) {
         eprintln!("[Client] Could not send daemon request: {error}");
     }
+}
+
+fn request_response(
+    writer: &Arc<Mutex<UnixStream>>,
+    reader: &Arc<Mutex<BufReader<UnixStream>>>,
+    request: &ClientMessage,
+) -> Result<ServerMessage, String> {
+    write_request(writer, request).map_err(|error| error.to_string())?;
+
+    let mut reader = reader
+        .lock()
+        .map_err(|_| "daemon reader lock was poisoned".to_string())?;
+    let mut line = String::new();
+    let bytes_read = reader
+        .read_line(&mut line)
+        .map_err(|error| error.to_string())?;
+    if bytes_read == 0 {
+        return Err("daemon closed the connection before acknowledging the request".to_string());
+    }
+    serde_json::from_str(&line).map_err(|error| error.to_string())
 }
 
 fn copy_to_clipboard(text: &str) {
@@ -98,6 +120,53 @@ fn copy_to_clipboard(text: &str) {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+}
+
+fn resolve_pin_slots(pinned_app_ids: &[Option<String>], apps: &[AppItem]) -> Vec<Option<AppItem>> {
+    (0..PIN_SLOT_COUNT)
+        .map(|slot| {
+            pinned_app_ids
+                .get(slot)
+                .and_then(Option::as_deref)
+                .and_then(|app_id| {
+                    apps.iter()
+                        .find(|app| app.app_id.as_str() == app_id)
+                        .cloned()
+                })
+        })
+        .collect()
+}
+
+fn pin_item(slot: usize, app: Option<&AppItem>) -> PinItem {
+    match app {
+        Some(app) => PinItem {
+            app_id: app.app_id.clone(),
+            text: app.text.clone(),
+            shortcut: format!("Alt+{}", slot + 1).into(),
+            has_native_icon: app.has_native_icon,
+            native_icon: app.native_icon.clone(),
+            text_icon: app.text_icon.clone(),
+        },
+        None => PinItem {
+            app_id: "".into(),
+            text: "".into(),
+            shortcut: format!("Alt+{}", slot + 1).into(),
+            has_native_icon: false,
+            native_icon: Image::default(),
+            text_icon: "+".into(),
+        },
+    }
+}
+
+fn render_pins(ui: &LauncherWindow, pins: &[Option<AppItem>]) {
+    let items: Vec<PinItem> = (0..PIN_SLOT_COUNT)
+        .map(|slot| pin_item(slot, pins.get(slot).and_then(Option::as_ref)))
+        .collect();
+    ui.set_pinned_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
+fn show_toast(ui: &LauncherWindow, message: impl Into<SharedString>) {
+    ui.set_toast_message(message.into());
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -111,8 +180,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
     let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
-    let apps = match initial_message {
-        ServerMessage::Init { apps } => apps,
+    let (apps, pinned_app_ids) = match initial_message {
+        ServerMessage::Init {
+            apps,
+            pinned_app_ids,
+        } => (apps, pinned_app_ids),
         ServerMessage::Error { message } => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
         }
@@ -148,9 +220,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps).clone()))));
     ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
 
+    let pin_slots: PinSlots = Rc::new(RefCell::new(resolve_pin_slots(&pinned_app_ids, &apps)));
+    render_pins(&ui, &pin_slots.borrow());
+
     // A synchronous local socket write is tiny and prevents the launcher from
     // exiting before a background writer has delivered its request.
     let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    let reader = Arc::new(Mutex::new(reader));
 
     // ---- Calculator mode state ----
     let calculator_active = Arc::new(AtomicBool::new(false));
@@ -271,6 +347,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::process::exit(0);
     });
 
+    let writer_pin = Arc::clone(&writer);
+    let reader_pin = Arc::clone(&reader);
+    let apps_pin = Rc::clone(&apps);
+    let pin_slots_assign = Rc::clone(&pin_slots);
+    let ui_pin = ui.as_weak();
+    ui.on_pin_app_requested(move |app_id, slot| {
+        let ui = ui_pin.unwrap();
+        let slot = match usize::try_from(slot) {
+            Ok(slot) if slot < PIN_SLOT_COUNT => slot,
+            _ => {
+                show_toast(&ui, "Invalid pin slot");
+                return;
+            }
+        };
+        let Some(app) = apps_pin
+            .iter()
+            .find(|app| app.app_id.as_str() == app_id.as_str())
+            .cloned()
+        else {
+            show_toast(&ui, "That application is no longer available");
+            return;
+        };
+
+        let response = request_response(
+            &writer_pin,
+            &reader_pin,
+            &ClientMessage::SetAppPin {
+                slot: slot as u8,
+                app_id: app_id.to_string(),
+            },
+        );
+        match response {
+            Ok(ServerMessage::ActionResult { success: true, .. }) => {
+                pin_slots_assign.borrow_mut()[slot] = Some(app.clone());
+                render_pins(&ui, &pin_slots_assign.borrow());
+                show_toast(&ui, format!("Pinned {} to Alt+{}", app.text, slot + 1));
+            }
+            Ok(ServerMessage::ActionResult {
+                success: false,
+                message,
+            })
+            | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
+            Ok(ServerMessage::Init { .. }) => {
+                show_toast(&ui, "Daemon returned an unexpected response");
+            }
+            Err(error) => show_toast(&ui, format!("Could not pin app: {error}")),
+        }
+    });
+
+    let writer_launch_pin = Arc::clone(&writer);
+    let pin_slots_launch = Rc::clone(&pin_slots);
+    let ui_launch_pin = ui.as_weak();
+    ui.on_launch_pinned_app(move |slot| {
+        let ui = ui_launch_pin.unwrap();
+        let slot = match usize::try_from(slot) {
+            Ok(slot) if slot < PIN_SLOT_COUNT => slot,
+            _ => return,
+        };
+        let app = pin_slots_launch
+            .borrow()
+            .get(slot)
+            .and_then(Option::as_ref)
+            .cloned();
+        let Some(app) = app else {
+            show_toast(&ui, format!("Alt+{} is empty", slot + 1));
+            return;
+        };
+
+        send_request(
+            &writer_launch_pin,
+            &ClientMessage::LaunchApp {
+                app_id: app.app_id.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
     // Clear search button handler.
     let ui_clear = ui.as_weak();
     let apps_clear = Rc::clone(&apps);
@@ -302,38 +455,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             format!("{total} Apps")
         };
         ui.set_ribbon_text(SharedString::from(label));
-    });
-
-    // These fixed actions remain until Phase 2 replaces them with inline views.
-    ui.on_sidebar_action(move |index| {
-        match index {
-            1 => {
-                let _ = std::process::Command::new("zen-browser").spawn();
-            }
-            2 => {
-                let _ = std::process::Command::new("sh")
-                    .args(["-c", "mpv --player-operation-mode=pseudo-gui"])
-                    .spawn();
-            }
-            3 => {
-                let _ = std::process::Command::new("footclient")
-                    .current_dir(env::var("HOME").unwrap_or_default())
-                    .args(["-e", "yazi"])
-                    .spawn();
-            }
-            4 => {
-                let _ = std::process::Command::new("footclient")
-                    .args(["-e", "btop"])
-                    .spawn();
-            }
-            5 => {
-                let _ = std::process::Command::new("footclient")
-                    .args(["-e", "nvim"])
-                    .spawn();
-            }
-            _ => {}
-        }
-        std::process::exit(0);
     });
 
     let writer_power = Arc::clone(&writer);

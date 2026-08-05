@@ -46,6 +46,23 @@ impl Default for LauncherState {
     }
 }
 
+impl LauncherState {
+    /// Assign an application identity to one of the six quick-launch slots.
+    pub fn set_pinned_app(&mut self, slot: usize, app_id: String) -> io::Result<()> {
+        let pin = self.pinned_apps.get_mut(slot).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "invalid app-pin slot {}; expected 0..{}",
+                    slot, PIN_SLOT_COUNT
+                ),
+            )
+        })?;
+        *pin = Some(app_id);
+        Ok(())
+    }
+}
+
 fn invalid_state(error: impl std::fmt::Display) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, error.to_string())
 }
@@ -120,5 +137,21 @@ mod tests {
             validate(state).expect_err("invalid state").kind(),
             io::ErrorKind::InvalidData
         );
+    }
+
+    #[test]
+    fn app_pin_assignment_updates_the_requested_slot() {
+        let mut state = LauncherState::default();
+        state
+            .set_pinned_app(2, "org.example.App.desktop".to_string())
+            .expect("assign pin");
+
+        assert_eq!(
+            state.pinned_apps[2].as_deref(),
+            Some("org.example.App.desktop")
+        );
+        assert!(state
+            .set_pinned_app(PIN_SLOT_COUNT, "other".to_string())
+            .is_err());
     }
 }
