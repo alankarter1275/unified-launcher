@@ -390,6 +390,18 @@ async fn handle_client(
         line.clear();
         let bytes_read = match reader.read_line(&mut line).await {
             Ok(bytes_read) => bytes_read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::BrokenPipe
+                        | io::ErrorKind::ConnectionReset
+                        | io::ErrorKind::UnexpectedEof
+                ) =>
+            {
+                // The short-lived client exits immediately after launch and
+                // manager requests. A peer reset at that point is normal.
+                return;
+            }
             Err(error) => {
                 warn!("Could not read launcher client request: {error}");
                 return;

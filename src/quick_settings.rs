@@ -62,18 +62,48 @@ fn notify(summary: &str, body: &str) {
     }
 }
 
+fn strip_ansi_sequences(value: &str) -> String {
+    let mut clean = String::new();
+    let mut characters = value.chars().peekable();
+
+    while let Some(character) = characters.next() {
+        if character != '\u{1b}' {
+            clean.push(character);
+            continue;
+        }
+
+        // Strip a CSI escape sequence such as `\x1b[1;32m`. This keeps the
+        // parser reliable when iwctl formats a table for a terminal session.
+        if characters.peek() == Some(&'[') {
+            let _ = characters.next();
+            for next in characters.by_ref() {
+                if next.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        }
+    }
+
+    clean
+}
+
+fn parse_iwd_device_list(output: &str) -> Option<(String, bool)> {
+    output.lines().find_map(|line| {
+        let clean_line = strip_ansi_sequences(line);
+        let fields: Vec<_> = clean_line.split_whitespace().collect();
+        let powered_index = fields
+            .iter()
+            .position(|field| matches!(*field, "on" | "off"))?;
+        let device = fields[..powered_index]
+            .iter()
+            .find(|field| !matches!(**field, "*" | ">" | "-"))?;
+        Some(((*device).to_string(), fields[powered_index] == "on"))
+    })
+}
+
 async fn wifi_device_state() -> Result<(String, bool), String> {
     let output = run_output("iwctl", &["device", "list"]).await?;
-    output_text(&output)
-        .lines()
-        .find_map(|line| {
-            let fields: Vec<_> = line.split_whitespace().collect();
-            if fields.len() >= 5 && matches!(fields[2], "on" | "off") {
-                Some((fields[0].to_string(), fields[2] == "on"))
-            } else {
-                None
-            }
-        })
+    parse_iwd_device_list(&output_text(&output))
         .ok_or_else(|| "iwd did not report a Wi-Fi device".to_string())
 }
 
@@ -309,6 +339,30 @@ pub async fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_iwd_device_table() {
+        let table = "\
+                                    Devices
+--------------------------------------------------------------------------------
+  Name                  Address               Powered     Adapter     Mode
+--------------------------------------------------------------------------------
+  wlan0                 xx:xx:xx:xx:xx:xx     on          phy0        station
+";
+        assert_eq!(
+            parse_iwd_device_list(table),
+            Some(("wlan0".to_string(), true))
+        );
+    }
+
+    #[test]
+    fn parses_a_marked_iwd_device() {
+        let table = "* wlan0 xx:xx:xx:xx:xx:xx off phy0 station";
+        assert_eq!(
+            parse_iwd_device_list(table),
+            Some(("wlan0".to_string(), false))
+        );
+    }
 
     #[test]
     fn profile_labels_are_human_readable() {
