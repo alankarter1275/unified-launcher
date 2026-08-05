@@ -792,21 +792,29 @@ export component LauncherWindow inherits Window {
                                                             vertical-alignment: center;
                                                             overflow: elide;
                                                         }
+                                                        // The layout cell fills the row; the inner pill is
+                                                        // explicitly centered within it.
                                                         Rectangle {
                                                             visible: app_shortcut != "";
                                                             width: app_shortcut == "" ? 0px : 48px;
-                                                            height: 24px;
-                                                            border-radius: 12px;
-                                                            background: index == root.absolute_index ? #3e4451 : #30343c;
-                                                            Text {
-                                                                text: app_shortcut;
-                                                                color: #abb2bf;
-                                                                font-size: 10px;
-                                                                font-weight: 700;
+                                                            height: parent.height;
+
+                                                            Rectangle {
                                                                 width: 100%;
-                                                                height: 100%;
-                                                                horizontal-alignment: center;
-                                                                vertical-alignment: center;
+                                                                height: 24px;
+                                                                y: (parent.height - self.height) / 2;
+                                                                border-radius: 12px;
+                                                                background: index == root.absolute_index ? #3e4451 : #30343c;
+                                                                Text {
+                                                                    text: app_shortcut;
+                                                                    color: #abb2bf;
+                                                                    font-size: 10px;
+                                                                    font-weight: 700;
+                                                                    width: 100%;
+                                                                    height: 100%;
+                                                                    horizontal-alignment: center;
+                                                                    vertical-alignment: center;
+                                                                }
                                                             }
                                                         }
                                                     }
