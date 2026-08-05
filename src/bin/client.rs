@@ -16,7 +16,7 @@ use slint::{Image, ModelRc, SharedString, VecModel};
 use unified_launcher::paths::socket_path;
 use unified_launcher::state::PIN_SLOT_COUNT;
 use unified_launcher::types::{
-    json_line, ClientMessage, PowerAction, PowerProfile, QuickSettingsAction,
+    json_line, ClientMessage, FolderPin, PowerAction, PowerProfile, QuickSettingsAction,
     QuickSettingsSnapshot, ServerMessage,
 };
 
@@ -168,6 +168,23 @@ fn render_pins(ui: &LauncherWindow, pins: &[Option<AppItem>]) {
     ui.set_pinned_items(ModelRc::from(Rc::new(VecModel::from(items))));
 }
 
+fn render_folders(ui: &LauncherWindow, folders: &[FolderPin]) {
+    let items: Vec<FolderItem> = folders
+        .iter()
+        .map(|folder| FolderItem {
+            id: folder.id.clone().into(),
+            label: folder.label.clone().into(),
+            path: folder.path.clone().into(),
+        })
+        .collect();
+    ui.set_folder_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
+fn render_folder_suggestions(ui: &LauncherWindow, suggestions: Vec<String>) {
+    let suggestions: Vec<SharedString> = suggestions.into_iter().map(Into::into).collect();
+    ui.set_folder_suggestions(ModelRc::from(Rc::new(VecModel::from(suggestions))));
+}
+
 fn show_toast(ui: &LauncherWindow, message: impl Into<SharedString>) {
     ui.set_toast_message(message.into());
 }
@@ -203,10 +220,34 @@ fn handle_quick_settings_response(ui: &LauncherWindow, response: Result<ServerMe
             show_toast(ui, message);
         }
         Ok(ServerMessage::Error { message }) => show_toast(ui, message),
-        Ok(ServerMessage::Init { .. }) => {
+        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
         Err(error) => show_toast(ui, format!("Quick Settings failed: {error}")),
+    }
+}
+
+fn handle_folder_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::ActionResult {
+            message,
+            folder_pins: Some(folder_pins),
+            ..
+        }) => {
+            render_folders(ui, &folder_pins);
+            ui.set_folder_form_visible(false);
+            ui.set_folder_name("".into());
+            ui.set_folder_path("".into());
+            render_folder_suggestions(ui, Vec::new());
+            show_toast(ui, message);
+        }
+        Ok(ServerMessage::ActionResult { message, .. }) | Ok(ServerMessage::Error { message }) => {
+            show_toast(ui, message)
+        }
+        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+            show_toast(ui, "Daemon returned an unexpected response");
+        }
+        Err(error) => show_toast(ui, format!("Folders failed: {error}")),
     }
 }
 
@@ -221,19 +262,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
     let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
-    let (apps, pinned_app_ids, quick_settings) = match initial_message {
+    let (apps, pinned_app_ids, folder_pins, quick_settings) = match initial_message {
         ServerMessage::Init {
             apps,
             pinned_app_ids,
+            folder_pins,
             quick_settings,
-        } => (apps, pinned_app_ids, quick_settings),
+        } => (apps, pinned_app_ids, folder_pins, quick_settings),
         ServerMessage::Error { message } => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
         }
-        ServerMessage::ActionResult { .. } => {
+        ServerMessage::ActionResult { .. } | ServerMessage::FolderPathSuggestions { .. } => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "daemon sent an action result before initialization",
+                "daemon sent a non-initialization message before initialization",
             )
             .into());
         }
@@ -262,6 +304,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps).clone()))));
     ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
     apply_quick_settings(&ui, &quick_settings);
+    render_folders(&ui, &folder_pins);
 
     let pin_slots: PinSlots = Rc::new(RefCell::new(resolve_pin_slots(&pinned_app_ids, &apps)));
     render_pins(&ui, &pin_slots.borrow());
@@ -433,7 +476,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..
             })
             | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
-            Ok(ServerMessage::Init { .. }) => {
+            Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
                 show_toast(&ui, "Daemon returned an unexpected response");
             }
             Err(error) => show_toast(&ui, format!("Could not pin app: {error}")),
@@ -565,6 +608,80 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &ClientMessage::QuickSettings {
                 action: QuickSettingsAction::OpenBluetoothManager,
             },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_folder_suggestions = Arc::clone(&writer);
+    let reader_folder_suggestions = Arc::clone(&reader);
+    let ui_folder_suggestions = ui.as_weak();
+    ui.on_folder_path_changed(move |path| {
+        let ui = ui_folder_suggestions.unwrap();
+        let response = request_response(
+            &writer_folder_suggestions,
+            &reader_folder_suggestions,
+            &ClientMessage::FolderPathSuggestions {
+                path: path.to_string(),
+            },
+        );
+        match response {
+            Ok(ServerMessage::FolderPathSuggestions { suggestions }) => {
+                render_folder_suggestions(&ui, suggestions);
+            }
+            Ok(ServerMessage::Error { .. }) | Err(_) => {
+                // A partial path often has no readable parent yet; simply hide
+                // completion until the user reaches one.
+                render_folder_suggestions(&ui, Vec::new());
+            }
+            Ok(_) => show_toast(&ui, "Daemon returned an unexpected response"),
+        }
+    });
+
+    let ui_folder_suggestion = ui.as_weak();
+    ui.on_folder_suggestion_selected(move |path| {
+        let ui = ui_folder_suggestion.unwrap();
+        ui.set_folder_path(path);
+        render_folder_suggestions(&ui, Vec::new());
+    });
+
+    let writer_add_folder = Arc::clone(&writer);
+    let reader_add_folder = Arc::clone(&reader);
+    let ui_add_folder = ui.as_weak();
+    ui.on_add_folder(move |label, path| {
+        let ui = ui_add_folder.unwrap();
+        if label.as_str().trim().is_empty() || path.as_str().trim().is_empty() {
+            show_toast(&ui, "Enter both a name and a path");
+            return;
+        }
+        let response = request_response(
+            &writer_add_folder,
+            &reader_add_folder,
+            &ClientMessage::CreateFolderPin {
+                label: label.to_string(),
+                path: path.to_string(),
+            },
+        );
+        handle_folder_response(&ui, response);
+    });
+
+    let writer_delete_folder = Arc::clone(&writer);
+    let reader_delete_folder = Arc::clone(&reader);
+    let ui_delete_folder = ui.as_weak();
+    ui.on_delete_folder(move |id| {
+        let ui = ui_delete_folder.unwrap();
+        let response = request_response(
+            &writer_delete_folder,
+            &reader_delete_folder,
+            &ClientMessage::DeleteFolderPin { id: id.to_string() },
+        );
+        handle_folder_response(&ui, response);
+    });
+
+    let writer_open_folder = Arc::clone(&writer);
+    ui.on_open_folder(move |id| {
+        send_request(
+            &writer_open_folder,
+            &ClientMessage::OpenFolder { id: id.to_string() },
         );
         std::process::exit(0);
     });

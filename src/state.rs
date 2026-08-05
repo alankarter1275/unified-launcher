@@ -61,6 +61,30 @@ impl LauncherState {
         *pin = Some(app_id);
         Ok(())
     }
+
+    /// Add a named directory pin and preserve insertion order for the UI.
+    pub fn add_folder_pin(&mut self, label: String, path: String) -> FolderPin {
+        let mut nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let id = loop {
+            let candidate = format!("folder-{}-{nonce}", std::process::id());
+            if self.folder_pins.iter().all(|pin| pin.id != candidate) {
+                break candidate;
+            }
+            nonce += 1;
+        };
+        let pin = FolderPin { id, label, path };
+        self.folder_pins.push(pin.clone());
+        pin
+    }
+
+    /// Remove a folder pin by its stable identifier.
+    pub fn remove_folder_pin(&mut self, id: &str) -> Option<FolderPin> {
+        let position = self.folder_pins.iter().position(|pin| pin.id == id)?;
+        Some(self.folder_pins.remove(position))
+    }
 }
 
 fn invalid_state(error: impl std::fmt::Display) -> io::Error {
@@ -153,5 +177,15 @@ mod tests {
         assert!(state
             .set_pinned_app(PIN_SLOT_COUNT, "other".to_string())
             .is_err());
+    }
+
+    #[test]
+    fn folder_pins_can_be_added_and_removed() {
+        let mut state = LauncherState::default();
+        let pin = state.add_folder_pin("Projects".to_string(), "/home/user/Projects".to_string());
+
+        assert_eq!(state.folder_pins.len(), 1);
+        assert_eq!(state.remove_folder_pin(&pin.id), Some(pin));
+        assert!(state.folder_pins.is_empty());
     }
 }

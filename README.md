@@ -98,9 +98,9 @@ replaces it immediately and shows an in-window confirmation.
 ### 5. Sidebar views
 
 The five non-power sidebar buttons now switch between inline launcher views for
-Quick Settings, Clock & Calendar, Notes, Folders, and File Finder. Their content
-is introduced incrementally in later feature phases; the Power view remains
-fully available now.
+Quick Settings, Clock & Calendar, Notes, Folders, and File Finder. Quick
+Settings and Folders are active; the remaining panels are introduced in later
+feature phases. The Power view remains fully available now.
 
 ### 6. Quick Settings
 
@@ -119,6 +119,21 @@ The Quick Settings view is intentionally small and Sway-oriented:
 Successful and failed toggles send standard desktop notifications, which Dunst
 displays. Opening Impala or bluetui deliberately does not send a notification.
 TLP actions use PolKit through `pkexec`, so authentication may be requested.
+
+### 7. Folder pins
+
+Open the **Folders** sidebar pane and use the `+` button to add a named folder
+pin. Paths must be absolute or begin with `~/`; the path field suggests direct
+child directories as you type without indexing the whole disk.
+
+Selecting a saved pin opens a new Yazi terminal window:
+
+```bash
+footclient -e yazi <folder-path>
+```
+
+Folder pins are saved in the same launcher state file as app pins. Use the `×`
+button on a row to remove a pin.
 
 ## Sway Integration
 

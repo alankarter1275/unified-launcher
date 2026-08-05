@@ -15,6 +15,7 @@ use zbus::{dbus_interface, dbus_proxy, zvariant::Value, Connection, ConnectionBu
 
 use unified_launcher::cache::{load_cache, save_cache};
 use unified_launcher::desktop::crawl_desktop_entries;
+use unified_launcher::folders::{path_suggestions, resolve_directory};
 use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_path};
 use unified_launcher::power::handle_power_action;
 use unified_launcher::quick_settings::{self, Inhibitors};
@@ -22,7 +23,7 @@ use unified_launcher::state::{
     load as load_launcher_state, save as save_launcher_state, LauncherState, PIN_SLOT_COUNT,
 };
 use unified_launcher::types::{
-    json_line, AppEntry, AppInit, ClientMessage, DaemonState, QuickSettingsAction,
+    json_line, AppEntry, AppInit, ClientMessage, DaemonState, FolderPin, QuickSettingsAction,
     QuickSettingsSnapshot, ServerMessage,
 };
 
@@ -326,6 +327,67 @@ async fn set_app_pin(
     Ok(format!("Pinned {app_name} to slot {}", slot_index + 1))
 }
 
+async fn create_folder_pin(
+    state: &Arc<Mutex<DaemonState>>,
+    label: String,
+    path: String,
+) -> Result<(String, Vec<FolderPin>), String> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Err("Folder name cannot be empty".to_string());
+    }
+    let path = resolve_directory(&path)?;
+
+    let mut state = state.lock().await;
+    let pin = state
+        .launcher_state
+        .add_folder_pin(label.to_string(), path.clone());
+    save_launcher_state(&state.launcher_state)
+        .map_err(|error| format!("Could not save folder pins: {error}"))?;
+
+    Ok((
+        format!("Added {}", pin.label),
+        state.launcher_state.folder_pins.clone(),
+    ))
+}
+
+async fn delete_folder_pin(
+    state: &Arc<Mutex<DaemonState>>,
+    id: String,
+) -> Result<(String, Vec<FolderPin>), String> {
+    let mut state = state.lock().await;
+    let pin = state
+        .launcher_state
+        .remove_folder_pin(&id)
+        .ok_or_else(|| "Folder pin no longer exists".to_string())?;
+    save_launcher_state(&state.launcher_state)
+        .map_err(|error| format!("Could not save folder pins: {error}"))?;
+
+    Ok((
+        format!("Removed {}", pin.label),
+        state.launcher_state.folder_pins.clone(),
+    ))
+}
+
+async fn open_folder(state: &Arc<Mutex<DaemonState>>, id: String) -> Result<String, String> {
+    let path = {
+        let state = state.lock().await;
+        state
+            .launcher_state
+            .folder_pins
+            .iter()
+            .find(|pin| pin.id == id)
+            .map(|pin| pin.path.clone())
+            .ok_or_else(|| "Folder pin no longer exists".to_string())?
+    };
+
+    std::process::Command::new("footclient")
+        .args(["-e", "yazi", path.as_str()])
+        .spawn()
+        .map(|_| "Opening Yazi".to_string())
+        .map_err(|error| format!("Could not open Yazi: {error}"))
+}
+
 async fn handle_quick_settings_action(
     state: &Arc<Mutex<DaemonState>>,
     inhibitors: &Arc<Mutex<Inhibitors>>,
@@ -347,9 +409,10 @@ async fn handle_client(
     inhibitors: Arc<Mutex<Inhibitors>>,
 ) {
     let (reader, mut writer) = stream.into_split();
-    let (apps, pinned_app_ids, quick_settings): (
+    let (apps, pinned_app_ids, folder_pins, quick_settings): (
         Vec<AppInit>,
         Vec<Option<String>>,
+        Vec<FolderPin>,
         QuickSettingsSnapshot,
     ) = {
         let state = state.lock().await;
@@ -365,6 +428,7 @@ async fn handle_client(
         (
             apps,
             state.launcher_state.pinned_apps.clone(),
+            state.launcher_state.folder_pins.clone(),
             state.quick_settings.clone(),
         )
     };
@@ -374,6 +438,7 @@ async fn handle_client(
         &ServerMessage::Init {
             apps,
             pinned_app_ids,
+            folder_pins,
             quick_settings,
         },
     )
@@ -425,7 +490,22 @@ async fn handle_client(
             }
         };
 
-        let result: Result<(String, Option<QuickSettingsSnapshot>), String> = match request {
+        let result: Result<
+            (
+                String,
+                Option<QuickSettingsSnapshot>,
+                Option<Vec<FolderPin>>,
+            ),
+            String,
+        > = match request {
+            ClientMessage::FolderPathSuggestions { path } => {
+                let response = match path_suggestions(&path) {
+                    Ok(suggestions) => ServerMessage::FolderPathSuggestions { suggestions },
+                    Err(message) => ServerMessage::Error { message },
+                };
+                let _ = write_server_message(&mut writer, &response).await;
+                continue;
+            }
             ClientMessage::LaunchApp { app_id } => {
                 let app = {
                     let state = state.lock().await;
@@ -438,32 +518,45 @@ async fn handle_client(
                         .map_err(|error| format!("Could not launch {}: {error}", app.name)),
                     None => Err(format!("Unknown application id: {app_id}")),
                 }
-                .map(|message| (message, None))
+                .map(|message| (message, None, None))
             }
             ClientMessage::SetAppPin { slot, app_id } => set_app_pin(&state, slot, app_id)
                 .await
-                .map(|message| (message, None)),
+                .map(|message| (message, None, None)),
+            ClientMessage::CreateFolderPin { label, path } => {
+                create_folder_pin(&state, label, path)
+                    .await
+                    .map(|(message, folder_pins)| (message, None, Some(folder_pins)))
+            }
+            ClientMessage::DeleteFolderPin { id } => delete_folder_pin(&state, id)
+                .await
+                .map(|(message, folder_pins)| (message, None, Some(folder_pins))),
+            ClientMessage::OpenFolder { id } => open_folder(&state, id)
+                .await
+                .map(|message| (message, None, None)),
             ClientMessage::PowerAction { action } => handle_power_action(action)
                 .map(|()| "Power action started".to_string())
                 .map_err(|error| format!("Could not start power action: {error}"))
-                .map(|message| (message, None)),
+                .map(|message| (message, None, None)),
             ClientMessage::QuickSettings { action } => {
                 handle_quick_settings_action(&state, &inhibitors, action)
                     .await
-                    .map(|(message, snapshot)| (message, Some(snapshot)))
+                    .map(|(message, snapshot)| (message, Some(snapshot), None))
             }
         };
 
         let response = match result {
-            Ok((message, quick_settings)) => ServerMessage::ActionResult {
+            Ok((message, quick_settings, folder_pins)) => ServerMessage::ActionResult {
                 success: true,
                 message,
                 quick_settings,
+                folder_pins,
             },
             Err(message) => ServerMessage::ActionResult {
                 success: false,
                 message,
                 quick_settings: None,
+                folder_pins: None,
             },
         };
         let _ = write_server_message(&mut writer, &response).await;

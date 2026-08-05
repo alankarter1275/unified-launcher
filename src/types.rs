@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::LauncherState;
+use crate::state::{FolderPin, LauncherState};
 
 /// A fully resolved desktop entry with a stable desktop-entry identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +130,10 @@ pub enum QuickSettingsAction {
 pub enum ClientMessage {
     LaunchApp { app_id: String },
     SetAppPin { slot: u8, app_id: String },
+    CreateFolderPin { label: String, path: String },
+    DeleteFolderPin { id: String },
+    OpenFolder { id: String },
+    FolderPathSuggestions { path: String },
     PowerAction { action: PowerAction },
     QuickSettings { action: QuickSettingsAction },
 }
@@ -141,12 +145,17 @@ pub enum ServerMessage {
     Init {
         apps: Vec<AppInit>,
         pinned_app_ids: Vec<Option<String>>,
+        folder_pins: Vec<FolderPin>,
         quick_settings: QuickSettingsSnapshot,
     },
     ActionResult {
         success: bool,
         message: String,
         quick_settings: Option<QuickSettingsSnapshot>,
+        folder_pins: Option<Vec<FolderPin>>,
+    },
+    FolderPathSuggestions {
+        suggestions: Vec<String>,
     },
     Error {
         message: String,
@@ -187,6 +196,10 @@ mod tests {
                 assert_eq!(app_id, "org.example.App.desktop");
             }
             ClientMessage::SetAppPin { .. }
+            | ClientMessage::CreateFolderPin { .. }
+            | ClientMessage::DeleteFolderPin { .. }
+            | ClientMessage::OpenFolder { .. }
+            | ClientMessage::FolderPathSuggestions { .. }
             | ClientMessage::PowerAction { .. }
             | ClientMessage::QuickSettings { .. } => panic!("decoded the wrong message variant"),
         }
