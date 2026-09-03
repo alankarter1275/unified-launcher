@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::notes::{Note, NoteSummary};
 use crate::state::{FolderPin, LauncherState};
 
 /// A fully resolved desktop entry with a stable desktop-entry identity.
@@ -128,14 +129,46 @@ pub enum QuickSettingsAction {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ClientMessage {
-    LaunchApp { app_id: String },
-    SetAppPin { slot: u8, app_id: String },
-    CreateFolderPin { label: String, path: String },
-    DeleteFolderPin { id: String },
-    OpenFolder { id: String },
-    FolderPathSuggestions { path: String },
-    PowerAction { action: PowerAction },
-    QuickSettings { action: QuickSettingsAction },
+    LaunchApp {
+        app_id: String,
+    },
+    SetAppPin {
+        slot: u8,
+        app_id: String,
+    },
+    CreateFolderPin {
+        label: String,
+        path: String,
+    },
+    DeleteFolderPin {
+        id: String,
+    },
+    OpenFolder {
+        id: String,
+    },
+    FolderPathSuggestions {
+        path: String,
+    },
+    CreateNote {
+        title: String,
+    },
+    LoadNote {
+        id: String,
+    },
+    SaveNote {
+        id: String,
+        title: String,
+        content: String,
+    },
+    DeleteNote {
+        id: String,
+    },
+    PowerAction {
+        action: PowerAction,
+    },
+    QuickSettings {
+        action: QuickSettingsAction,
+    },
 }
 
 /// Messages emitted by the daemon over the Unix socket.
@@ -146,6 +179,7 @@ pub enum ServerMessage {
         apps: Vec<AppInit>,
         pinned_app_ids: Vec<Option<String>>,
         folder_pins: Vec<FolderPin>,
+        notes: Vec<NoteSummary>,
         quick_settings: QuickSettingsSnapshot,
     },
     ActionResult {
@@ -153,9 +187,14 @@ pub enum ServerMessage {
         message: String,
         quick_settings: Option<QuickSettingsSnapshot>,
         folder_pins: Option<Vec<FolderPin>>,
+        notes: Option<Vec<NoteSummary>>,
+        note: Option<Note>,
     },
     FolderPathSuggestions {
         suggestions: Vec<String>,
+    },
+    NoteLoaded {
+        note: Note,
     },
     Error {
         message: String,
@@ -200,6 +239,10 @@ mod tests {
             | ClientMessage::DeleteFolderPin { .. }
             | ClientMessage::OpenFolder { .. }
             | ClientMessage::FolderPathSuggestions { .. }
+            | ClientMessage::CreateNote { .. }
+            | ClientMessage::LoadNote { .. }
+            | ClientMessage::SaveNote { .. }
+            | ClientMessage::DeleteNote { .. }
             | ClientMessage::PowerAction { .. }
             | ClientMessage::QuickSettings { .. } => panic!("decoded the wrong message variant"),
         }

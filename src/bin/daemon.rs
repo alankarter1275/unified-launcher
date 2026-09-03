@@ -16,6 +16,7 @@ use zbus::{dbus_interface, dbus_proxy, zvariant::Value, Connection, ConnectionBu
 use unified_launcher::cache::{load_cache, save_cache};
 use unified_launcher::desktop::crawl_desktop_entries;
 use unified_launcher::folders::{path_suggestions, resolve_directory};
+use unified_launcher::notes::{self, Note, NoteSummary};
 use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_path};
 use unified_launcher::power::handle_power_action;
 use unified_launcher::quick_settings::{self, Inhibitors};
@@ -31,11 +32,24 @@ use unified_launcher::types::{
 const POLKIT_AGENT_PATH: &str = "/org/freedesktop/PolicyKit1/AuthenticationAgent";
 const POLKIT_HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
 
-type DaemonActionPayload = (
-    String,
-    Option<QuickSettingsSnapshot>,
-    Option<Vec<FolderPin>>,
-);
+#[derive(Default)]
+struct DaemonActionPayload {
+    message: String,
+    quick_settings: Option<QuickSettingsSnapshot>,
+    folder_pins: Option<Vec<FolderPin>>,
+    notes: Option<Vec<NoteSummary>>,
+    note: Option<Note>,
+}
+
+impl DaemonActionPayload {
+    fn message(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            ..Self::default()
+        }
+    }
+}
+
 type DaemonActionResult = Result<DaemonActionPayload, String>;
 
 // --------------------------------------------------------
@@ -396,6 +410,32 @@ async fn open_folder(state: &Arc<Mutex<DaemonState>>, id: String) -> Result<Stri
         .map_err(|error| format!("Could not open Yazi: {error}"))
 }
 
+fn note_summaries() -> Result<Vec<NoteSummary>, String> {
+    notes::list().map_err(|error| format!("Could not list notes: {error}"))
+}
+
+fn create_note(title: String) -> Result<(String, Vec<NoteSummary>, Note), String> {
+    let note = notes::create(&title).map_err(|error| format!("Could not create note: {error}"))?;
+    let summaries = note_summaries()?;
+    Ok((format!("Created {}", note.title), summaries, note))
+}
+
+fn save_note(
+    id: String,
+    title: String,
+    content: String,
+) -> Result<(Vec<NoteSummary>, Note), String> {
+    let note = notes::save(&id, &title, &content)
+        .map_err(|error| format!("Could not save note: {error}"))?;
+    let summaries = note_summaries()?;
+    Ok((summaries, note))
+}
+
+fn delete_note(id: String) -> Result<Vec<NoteSummary>, String> {
+    notes::delete(&id).map_err(|error| format!("Could not delete note: {error}"))?;
+    note_summaries()
+}
+
 async fn handle_quick_settings_action(
     state: &Arc<Mutex<DaemonState>>,
     inhibitors: &Arc<Mutex<Inhibitors>>,
@@ -417,6 +457,13 @@ async fn handle_client(
     inhibitors: Arc<Mutex<Inhibitors>>,
 ) {
     let (reader, mut writer) = stream.into_split();
+    let note_list = match note_summaries() {
+        Ok(notes) => notes,
+        Err(error) => {
+            warn!("{error}");
+            Vec::new()
+        }
+    };
     let (apps, pinned_app_ids, folder_pins, quick_settings): (
         Vec<AppInit>,
         Vec<Option<String>>,
@@ -447,6 +494,7 @@ async fn handle_client(
             apps,
             pinned_app_ids,
             folder_pins,
+            notes: note_list,
             quick_settings,
         },
     )
@@ -507,6 +555,16 @@ async fn handle_client(
                 let _ = write_server_message(&mut writer, &response).await;
                 continue;
             }
+            ClientMessage::LoadNote { id } => {
+                let response = match notes::load(&id) {
+                    Ok(note) => ServerMessage::NoteLoaded { note },
+                    Err(error) => ServerMessage::Error {
+                        message: format!("Could not load note: {error}"),
+                    },
+                };
+                let _ = write_server_message(&mut writer, &response).await;
+                continue;
+            }
             ClientMessage::LaunchApp { app_id } => {
                 let app = {
                     let state = state.lock().await;
@@ -519,45 +577,83 @@ async fn handle_client(
                         .map_err(|error| format!("Could not launch {}: {error}", app.name)),
                     None => Err(format!("Unknown application id: {app_id}")),
                 }
-                .map(|message| (message, None, None))
+                .map(DaemonActionPayload::message)
             }
             ClientMessage::SetAppPin { slot, app_id } => set_app_pin(&state, slot, app_id)
                 .await
-                .map(|message| (message, None, None)),
+                .map(DaemonActionPayload::message),
             ClientMessage::CreateFolderPin { label, path } => {
                 create_folder_pin(&state, label, path)
                     .await
-                    .map(|(message, folder_pins)| (message, None, Some(folder_pins)))
+                    .map(|(message, folder_pins)| DaemonActionPayload {
+                        message,
+                        folder_pins: Some(folder_pins),
+                        ..DaemonActionPayload::default()
+                    })
             }
-            ClientMessage::DeleteFolderPin { id } => delete_folder_pin(&state, id)
-                .await
-                .map(|(message, folder_pins)| (message, None, Some(folder_pins))),
+            ClientMessage::DeleteFolderPin { id } => {
+                delete_folder_pin(&state, id)
+                    .await
+                    .map(|(message, folder_pins)| DaemonActionPayload {
+                        message,
+                        folder_pins: Some(folder_pins),
+                        ..DaemonActionPayload::default()
+                    })
+            }
             ClientMessage::OpenFolder { id } => open_folder(&state, id)
                 .await
-                .map(|message| (message, None, None)),
+                .map(DaemonActionPayload::message),
+            ClientMessage::CreateNote { title } => {
+                create_note(title).map(|(message, notes, note)| DaemonActionPayload {
+                    message,
+                    notes: Some(notes),
+                    note: Some(note),
+                    ..DaemonActionPayload::default()
+                })
+            }
+            ClientMessage::SaveNote { id, title, content } => {
+                save_note(id, title, content).map(|(notes, _note)| DaemonActionPayload {
+                    message: "Saved note".to_string(),
+                    notes: Some(notes),
+                    ..DaemonActionPayload::default()
+                })
+            }
+            ClientMessage::DeleteNote { id } => delete_note(id).map(|notes| DaemonActionPayload {
+                message: "Deleted note".to_string(),
+                notes: Some(notes),
+                ..DaemonActionPayload::default()
+            }),
             ClientMessage::PowerAction { action } => handle_power_action(action)
                 .map(|()| "Power action started".to_string())
                 .map_err(|error| format!("Could not start power action: {error}"))
-                .map(|message| (message, None, None)),
+                .map(DaemonActionPayload::message),
             ClientMessage::QuickSettings { action } => {
                 handle_quick_settings_action(&state, &inhibitors, action)
                     .await
-                    .map(|(message, snapshot)| (message, Some(snapshot), None))
+                    .map(|(message, snapshot)| DaemonActionPayload {
+                        message,
+                        quick_settings: Some(snapshot),
+                        ..DaemonActionPayload::default()
+                    })
             }
         };
 
         let response = match result {
-            Ok((message, quick_settings, folder_pins)) => ServerMessage::ActionResult {
+            Ok(update) => ServerMessage::ActionResult {
                 success: true,
-                message,
-                quick_settings,
-                folder_pins,
+                message: update.message,
+                quick_settings: update.quick_settings,
+                folder_pins: update.folder_pins,
+                notes: update.notes,
+                note: update.note,
             },
             Err(message) => ServerMessage::ActionResult {
                 success: false,
                 message,
                 quick_settings: None,
                 folder_pins: None,
+                notes: None,
+                note: None,
             },
         };
         let _ = write_server_message(&mut writer, &response).await;

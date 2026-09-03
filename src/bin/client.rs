@@ -9,10 +9,13 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use chrono::{Local, NaiveDate};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use slint::{Image, ModelRc, SharedString, VecModel};
+use slint::{Image, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
+use unified_launcher::calendar::{local_clock_text, month_grid, month_start, shift_month};
+use unified_launcher::notes::{Note, NoteSummary};
 use unified_launcher::paths::socket_path;
 use unified_launcher::state::{FolderPin, PIN_SLOT_COUNT};
 use unified_launcher::types::{
@@ -185,6 +188,31 @@ fn render_folder_suggestions(ui: &LauncherWindow, suggestions: Vec<String>) {
     ui.set_folder_suggestions(ModelRc::from(Rc::new(VecModel::from(suggestions))));
 }
 
+fn render_notes(ui: &LauncherWindow, notes: &[NoteSummary]) {
+    let items: Vec<NoteItem> = notes
+        .iter()
+        .map(|note| NoteItem {
+            id: note.id.clone().into(),
+            title: note.title.clone().into(),
+        })
+        .collect();
+    ui.set_note_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
+fn set_current_note(ui: &LauncherWindow, note: &Note) {
+    ui.set_selected_note_id(note.id.clone().into());
+    ui.set_note_title(note.title.clone().into());
+    ui.set_note_content(note.content.clone().into());
+    ui.set_note_dirty(false);
+}
+
+fn clear_current_note(ui: &LauncherWindow) {
+    ui.set_selected_note_id("".into());
+    ui.set_note_title("".into());
+    ui.set_note_content("".into());
+    ui.set_note_dirty(false);
+}
+
 fn show_toast(ui: &LauncherWindow, message: impl Into<SharedString>) {
     ui.set_toast_message(message.into());
 }
@@ -220,7 +248,9 @@ fn handle_quick_settings_response(ui: &LauncherWindow, response: Result<ServerMe
             show_toast(ui, message);
         }
         Ok(ServerMessage::Error { message }) => show_toast(ui, message),
-        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
         Err(error) => show_toast(ui, format!("Quick Settings failed: {error}")),
@@ -244,11 +274,65 @@ fn handle_folder_response(ui: &LauncherWindow, response: Result<ServerMessage, S
         Ok(ServerMessage::ActionResult { message, .. }) | Ok(ServerMessage::Error { message }) => {
             show_toast(ui, message)
         }
-        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
         Err(error) => show_toast(ui, format!("Folders failed: {error}")),
     }
+}
+
+fn handle_note_response(
+    ui: &LauncherWindow,
+    response: Result<ServerMessage, String>,
+    show_success_message: bool,
+) {
+    match response {
+        Ok(ServerMessage::ActionResult {
+            success,
+            message,
+            notes,
+            note,
+            ..
+        }) => {
+            if let Some(notes) = notes {
+                render_notes(ui, &notes);
+            }
+            if let Some(note) = note {
+                set_current_note(ui, &note);
+            }
+            if show_success_message || !success {
+                show_toast(ui, message);
+            }
+        }
+        Ok(ServerMessage::NoteLoaded { note }) => set_current_note(ui, &note),
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+            show_toast(ui, "Daemon returned an unexpected response");
+        }
+        Err(error) => show_toast(ui, format!("Notes failed: {error}")),
+    }
+}
+
+fn render_calendar(ui: &LauncherWindow, month: NaiveDate) {
+    let today = Local::now().date_naive();
+    let days: Vec<CalendarDay> = month_grid(month, today)
+        .into_iter()
+        .map(|cell| CalendarDay {
+            label: cell.day.to_string().into(),
+            in_current_month: cell.in_current_month,
+            is_today: cell.is_today,
+        })
+        .collect();
+    ui.set_calendar_month(month.format("%B %Y").to_string().into());
+    ui.set_calendar_days(ModelRc::from(Rc::new(VecModel::from(days))));
+}
+
+fn refresh_clock(ui: &LauncherWindow) {
+    let (clock, date) = local_clock_text();
+    ui.set_clock_text(clock.into());
+    ui.set_clock_date(date.into());
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -257,22 +341,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ui = LauncherWindow::new()?;
     let matcher = Arc::new(SkimMatcherV2::default());
+    let calendar_month = Rc::new(RefCell::new(month_start(Local::now().date_naive())));
+    refresh_clock(&ui);
+    render_calendar(&ui, *calendar_month.borrow());
+
+    let ui_clock = ui.as_weak();
+    let clock_timer = Timer::default();
+    clock_timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
+        if let Some(ui) = ui_clock.upgrade() {
+            refresh_clock(&ui);
+        }
+    });
 
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
     let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
-    let (apps, pinned_app_ids, folder_pins, quick_settings) = match initial_message {
+    let (apps, pinned_app_ids, folder_pins, notes, quick_settings) = match initial_message {
         ServerMessage::Init {
             apps,
             pinned_app_ids,
             folder_pins,
+            notes,
             quick_settings,
-        } => (apps, pinned_app_ids, folder_pins, quick_settings),
+        } => (apps, pinned_app_ids, folder_pins, notes, quick_settings),
         ServerMessage::Error { message } => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
         }
-        ServerMessage::ActionResult { .. } | ServerMessage::FolderPathSuggestions { .. } => {
+        ServerMessage::ActionResult { .. }
+        | ServerMessage::FolderPathSuggestions { .. }
+        | ServerMessage::NoteLoaded { .. } => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "daemon sent a non-initialization message before initialization",
@@ -305,6 +403,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
     apply_quick_settings(&ui, &quick_settings);
     render_folders(&ui, &folder_pins);
+    render_notes(&ui, &notes);
 
     let pin_slots: PinSlots = Rc::new(RefCell::new(resolve_pin_slots(&pinned_app_ids, &apps)));
     render_pins(&ui, &pin_slots.borrow());
@@ -476,7 +575,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..
             })
             | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
-            Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+            Ok(ServerMessage::FolderPathSuggestions { .. })
+            | Ok(ServerMessage::NoteLoaded { .. })
+            | Ok(ServerMessage::Init { .. }) => {
                 show_toast(&ui, "Daemon returned an unexpected response");
             }
             Err(error) => show_toast(&ui, format!("Could not pin app: {error}")),
@@ -509,6 +610,102 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
         std::process::exit(0);
+    });
+
+    let writer_create_note = Arc::clone(&writer);
+    let reader_create_note = Arc::clone(&reader);
+    let ui_create_note = ui.as_weak();
+    ui.on_create_note(move || {
+        let ui = ui_create_note.unwrap();
+        let response = request_response(
+            &writer_create_note,
+            &reader_create_note,
+            &ClientMessage::CreateNote {
+                title: "Untitled".to_string(),
+            },
+        );
+        handle_note_response(&ui, response, true);
+    });
+
+    let writer_load_note = Arc::clone(&writer);
+    let reader_load_note = Arc::clone(&reader);
+    let ui_load_note = ui.as_weak();
+    ui.on_load_note(move |id| {
+        let ui = ui_load_note.unwrap();
+        let response = request_response(
+            &writer_load_note,
+            &reader_load_note,
+            &ClientMessage::LoadNote { id: id.to_string() },
+        );
+        handle_note_response(&ui, response, false);
+    });
+
+    let writer_save_note = Arc::clone(&writer);
+    let reader_save_note = Arc::clone(&reader);
+    let ui_save_note = ui.as_weak();
+    ui.on_save_note(move |id, title, content| {
+        if id.is_empty() {
+            return;
+        }
+        let ui = ui_save_note.unwrap();
+        let response = request_response(
+            &writer_save_note,
+            &reader_save_note,
+            &ClientMessage::SaveNote {
+                id: id.to_string(),
+                title: title.to_string(),
+                content: content.to_string(),
+            },
+        );
+        handle_note_response(&ui, response, false);
+    });
+
+    let writer_delete_note = Arc::clone(&writer);
+    let reader_delete_note = Arc::clone(&reader);
+    let ui_delete_note = ui.as_weak();
+    ui.on_delete_note(move |id| {
+        let ui = ui_delete_note.unwrap();
+        let was_selected = ui.get_selected_note_id().as_str() == id.as_str();
+        let response = request_response(
+            &writer_delete_note,
+            &reader_delete_note,
+            &ClientMessage::DeleteNote { id: id.to_string() },
+        );
+        let deleted = matches!(
+            &response,
+            Ok(ServerMessage::ActionResult { success: true, .. })
+        );
+        handle_note_response(&ui, response, true);
+        if deleted && was_selected {
+            clear_current_note(&ui);
+        }
+    });
+
+    let calendar_month_previous = Rc::clone(&calendar_month);
+    let ui_calendar_previous = ui.as_weak();
+    ui.on_calendar_previous_month(move || {
+        let ui = ui_calendar_previous.unwrap();
+        let mut month = calendar_month_previous.borrow_mut();
+        *month = shift_month(*month, -1);
+        render_calendar(&ui, *month);
+    });
+
+    let calendar_month_next = Rc::clone(&calendar_month);
+    let ui_calendar_next = ui.as_weak();
+    ui.on_calendar_next_month(move || {
+        let ui = ui_calendar_next.unwrap();
+        let mut month = calendar_month_next.borrow_mut();
+        *month = shift_month(*month, 1);
+        render_calendar(&ui, *month);
+    });
+
+    let calendar_month_today = Rc::clone(&calendar_month);
+    let ui_calendar_today = ui.as_weak();
+    ui.on_calendar_today(move || {
+        let ui = ui_calendar_today.unwrap();
+        let mut month = calendar_month_today.borrow_mut();
+        *month = month_start(Local::now().date_naive());
+        render_calendar(&ui, *month);
     });
 
     let writer_wifi = Arc::clone(&writer);
@@ -734,5 +931,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.run()?;
+    clock_timer.stop();
     Ok(())
 }

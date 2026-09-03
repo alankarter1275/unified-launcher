@@ -8,13 +8,17 @@
 //! - [`desktop`] — `.desktop` file crawling and icon resolution
 //! - [`folders`] — folder-pin validation and lightweight path completion
 //! - [`cache`] — app cache persistence across restarts
+//! - [`notes`] — local Markdown note storage
+//! - [`calendar`] — local clock and month-calendar helpers
 //! - [`power`] — system power/session actions
 //! - [`quick_settings`] — Sway-oriented Quick Settings integrations
 
 pub mod cache;
+pub mod calendar;
 pub mod desktop;
 pub mod error;
 pub mod folders;
+pub mod notes;
 pub mod paths;
 pub mod power;
 pub mod quick_settings;

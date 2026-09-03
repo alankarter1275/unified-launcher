@@ -98,9 +98,9 @@ replaces it immediately and shows an in-window confirmation.
 ### 5. Sidebar views
 
 The five non-power sidebar buttons now switch between inline launcher views for
-Quick Settings, Clock & Calendar, Notes, Folders, and File Finder. Quick
-Settings and Folders are active; the remaining panels are introduced in later
-feature phases. The Power view remains fully available now.
+Quick Settings, Clock & Calendar, Notes, Folders, and File Finder. Everything
+except File Finder is active; that final panel is introduced in a later feature
+phase. The Power view remains fully available now.
 
 ### 6. Quick Settings
 
@@ -134,6 +134,23 @@ footclient -e yazi <folder-path>
 
 Folder pins are saved in the same launcher state file as app pins. Use the `×`
 button on a row to remove a pin.
+
+### 8. Notes
+
+The **Notes** pane provides a small local note list and editor. Use `+` to
+create a note, edit its title and body, and it autosaves while you type. Notes
+are stored as readable Markdown files under:
+
+```text
+~/.local/share/unified-launcher/notes/
+```
+
+### 9. Clock & Calendar
+
+The **Clock & Calendar** pane shows the local time, full date, and a simple
+Monday-first monthly calendar. Use the previous/next controls to browse months
+or **Today** to return to the current month. It has no online calendar, event,
+or account integration.
 
 ## Sway Integration
 

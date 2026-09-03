@@ -21,6 +21,17 @@ export struct FolderItem {
     path: string,
 }
 
+export struct NoteItem {
+    id: string,
+    title: string,
+}
+
+export struct CalendarDay {
+    label: string,
+    in_current_month: bool,
+    is_today: bool,
+}
+
 // --------------------------------------------------------
 // CUSTOM COMPONENTS
 // --------------------------------------------------------
@@ -420,6 +431,70 @@ component FolderRow inherits Rectangle {
 
 }
 
+component NoteRow inherits Rectangle {
+    in property <string> note_id;
+    in property <string> title;
+    in property <bool> selected: false;
+    callback selected_note(string);
+    callback removed(string);
+
+    height: 38px;
+    border-radius: 9px;
+    background: root.selected ? #2c323c : row_ta.has-hover ? #252931 : transparent;
+
+    row_ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.selected_note(root.note_id); }
+    }
+
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 5px;
+        spacing: 7px;
+        Text {
+            text: "󰎚";
+            color: root.selected ? #c678dd : #5c6370;
+            font-family: "JetBrainsMono Nerd Font Propo";
+            font-size: 15px;
+            width: 18px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        Text {
+            text: root.title;
+            color: root.selected ? #ffffff : #abb2bf;
+            font-size: 12px;
+            font-weight: 600;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        Rectangle {
+            width: 22px;
+            height: 22px;
+            border-radius: 11px;
+            background: remove_ta.has-hover ? #4b2a2e : transparent;
+            Text {
+                text: "✕";
+                color: #e06c75;
+                font-size: 10px;
+                width: 100%;
+                height: 100%;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            remove_ta := TouchArea {
+                width: 100%;
+                height: 100%;
+                mouse-cursor: pointer;
+                clicked => { root.removed(root.note_id); }
+            }
+        }
+    }
+}
+
 component UtilityPlaceholder inherits Rectangle {
     in property <string> icon;
     in property <string> title;
@@ -480,6 +555,20 @@ export component LauncherWindow inherits Window {
     in-out property <bool> folder_form_visible: false;
     in-out property <string> folder_name: "";
     in-out property <string> folder_path: "";
+
+    // Notes state
+    in property <[NoteItem]> note_items: [];
+    in-out property <string> selected_note_id: "";
+    in-out property <string> note_title: "";
+    in-out property <string> note_content: "";
+    in-out property <bool> note_dirty: false;
+
+    // Clock and calendar state
+    in property <[CalendarDay]> calendar_days: [];
+    in-out property <string> calendar_month: "";
+    in-out property <string> clock_text: "";
+    in-out property <string> clock_date: "";
+
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
     in-out property <string> toast_message: "";
@@ -517,6 +606,13 @@ export component LauncherWindow inherits Window {
     callback open_folder(string);
     callback folder_path_changed(string);
     callback folder_suggestion_selected(string);
+    callback create_note();
+    callback load_note(string);
+    callback save_note(string, string, string);
+    callback delete_note(string);
+    callback calendar_previous_month();
+    callback calendar_next_month();
+    callback calendar_today();
     callback power_action(string);
     callback toggle_wifi();
     callback toggle_bluetooth();
@@ -546,6 +642,29 @@ export component LauncherWindow inherits Window {
         root.folder_name = "";
         root.folder_path = "";
         root.folder_suggestions = [];
+    }
+
+    public function mark_note_dirty() {
+        if (root.selected_note_id != "") {
+            root.note_dirty = true;
+        }
+    }
+
+    public function select_note(id: string) {
+        if (id == root.selected_note_id) { return; }
+        if (root.note_dirty && root.selected_note_id != "") {
+            root.note_dirty = false;
+            root.save_note(root.selected_note_id, root.note_title, root.note_content);
+        }
+        root.load_note(id);
+    }
+
+    public function create_new_note() {
+        if (root.note_dirty && root.selected_note_id != "") {
+            root.note_dirty = false;
+            root.save_note(root.selected_note_id, root.note_title, root.note_content);
+        }
+        root.create_note();
     }
 
     public function pin_current_app(slot: int) {
@@ -1471,9 +1590,260 @@ export component LauncherWindow inherits Window {
                         }
                     }
 
+                    // ====== CLOCK & CALENDAR VIEW ======
+                    Rectangle {
+                        visible: root.current_view == "calendar";
+                        width: 100%;
+                        height: 100%;
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 6px;
+
+                            Text {
+                                text: root.clock_text;
+                                color: #ffffff;
+                                font-size: 48px;
+                                font-weight: 700;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: root.clock_date;
+                                color: #abb2bf;
+                                font-size: 14px;
+                                horizontal-alignment: center;
+                            }
+
+                            HorizontalLayout {
+                                height: 36px;
+                                spacing: 8px;
+                                ProfileButton {
+                                    width: 42px;
+                                    label: "‹";
+                                    clicked => { root.calendar_previous_month(); }
+                                }
+                                Text {
+                                    text: root.calendar_month;
+                                    color: #ffffff;
+                                    font-size: 16px;
+                                    font-weight: 700;
+                                    horizontal-stretch: 1;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                ProfileButton {
+                                    width: 62px;
+                                    label: "Today";
+                                    clicked => { root.calendar_today(); }
+                                }
+                                ProfileButton {
+                                    width: 42px;
+                                    label: "›";
+                                    clicked => { root.calendar_next_month(); }
+                                }
+                            }
+
+                            HorizontalLayout {
+                                height: 20px;
+                                for weekday in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]: Text {
+                                    text: weekday;
+                                    color: #5c6370;
+                                    font-size: 10px;
+                                    font-weight: 700;
+                                    horizontal-stretch: 1;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            calendar_grid := Rectangle {
+                                width: 100%;
+                                height: 204px;
+                                for day[index] in root.calendar_days: Rectangle {
+                                    x: mod(index, 7) * (parent.width / 7);
+                                    y: floor(index / 7) * 34px;
+                                    width: parent.width / 7;
+                                    height: 34px;
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 14px;
+                                        background: day.is_today ? #61afef : transparent;
+                                        Text {
+                                            text: day.label;
+                                            color: day.is_today ? #181a1f : day.in_current_month ? #ffffff : #5c6370;
+                                            font-size: 12px;
+                                            font-weight: day.is_today ? 700 : 500;
+                                            width: 100%;
+                                            height: 100%;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ====== NOTES VIEW ======
+                    Rectangle {
+                        visible: root.current_view == "notes";
+                        width: 100%;
+                        height: 100%;
+
+                        HorizontalLayout {
+                            spacing: 10px;
+
+                            Rectangle {
+                                width: 180px;
+                                background: #181a1f;
+                                border-radius: 12px;
+                                VerticalLayout {
+                                    padding: 10px;
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        height: 28px;
+                                        Text {
+                                            text: "Notes";
+                                            color: #ffffff;
+                                            font-size: 16px;
+                                            font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        Rectangle {
+                                            width: 26px;
+                                            height: 26px;
+                                            border-radius: 13px;
+                                            background: new_note_ta.has-hover ? #2c323c : #252931;
+                                            Text {
+                                                text: "+";
+                                                color: #c678dd;
+                                                font-size: 18px;
+                                                width: 100%;
+                                                height: 100%;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
+                                            new_note_ta := TouchArea {
+                                                width: 100%;
+                                                height: 100%;
+                                                mouse-cursor: pointer;
+                                                clicked => { root.create_new_note(); }
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        vertical-stretch: 1;
+                                        visible: root.note_items.length == 0;
+                                        Text {
+                                            text: "No notes yet\nUse + to create one.";
+                                            color: #5c6370;
+                                            font-size: 12px;
+                                            width: 100%;
+                                            height: 100%;
+                                            horizontal-alignment: center;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                    Flickable {
+                                        vertical-stretch: 1;
+                                        visible: root.note_items.length > 0;
+                                        viewport-height: note_list.preferred-height;
+                                        note_list := VerticalLayout {
+                                            width: parent.width;
+                                            alignment: start;
+                                            spacing: 4px;
+                                            for note in root.note_items: NoteRow {
+                                                note_id: note.id;
+                                                title: note.title;
+                                                selected: note.id == root.selected_note_id;
+                                                selected_note(id) => { root.select_note(id); }
+                                                removed(id) => { root.delete_note(id); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                background: #21252b;
+                                border-radius: 12px;
+                                clip: true;
+
+                                if root.selected_note_id == "": Text {
+                                    text: "Create or select a note";
+                                    color: #5c6370;
+                                    font-size: 15px;
+                                    width: 100%;
+                                    height: 100%;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+
+                                if root.selected_note_id != "": VerticalLayout {
+                                    padding: 14px;
+                                    spacing: 8px;
+                                    Rectangle {
+                                        height: 38px;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: note_title_input.has-focus ? #c678dd : #3e4451;
+                                        background: #181a1f;
+                                        note_title_input := TextInput {
+                                            text <=> root.note_title;
+                                            width: 100%;
+                                            height: 100%;
+                                            vertical-alignment: center;
+                                            font-size: 17px;
+                                            font-weight: 700;
+                                            color: #ffffff;
+                                            single-line: true;
+                                            edited => { root.mark_note_dirty(); }
+                                        }
+                                    }
+                                    Rectangle {
+                                        vertical-stretch: 1;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: note_content_input.has-focus ? #c678dd : #3e4451;
+                                        background: #181a1f;
+                                        note_content_input := TextInput {
+                                            text <=> root.note_content;
+                                            width: 100%;
+                                            height: 100%;
+                                            vertical-alignment: top;
+                                            font-size: 14px;
+                                            color: #abb2bf;
+                                            single-line: false;
+                                            edited => { root.mark_note_dirty(); }
+                                        }
+                                        Text {
+                                            visible: note_content_input.text == "";
+                                            text: "Write something…";
+                                            color: #5c6370;
+                                            font-size: 14px;
+                                            x: 10px;
+                                            y: 10px;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.note_dirty ? "Autosaving…" : "Saved locally";
+                                        color: root.note_dirty ? #c678dd : #5c6370;
+                                        font-size: 11px;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ====== FUTURE INLINE VIEWS ======
                     UtilityPlaceholder {
-                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "quick-settings" && root.current_view != "folders";
+                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "quick-settings" && root.current_view != "folders" && root.current_view != "calendar" && root.current_view != "notes";
                         width: 100%;
                         height: 100%;
                         icon: root.current_view == "calendar" ? "󰃭" :
@@ -1563,6 +1933,17 @@ export component LauncherWindow inherits Window {
             interval: 1800ms;
             running: root.toast_message != "";
             triggered => { root.toast_message = ""; }
+        }
+
+        note_save_timer := Timer {
+            interval: 750ms;
+            running: root.note_dirty;
+            triggered => {
+                root.note_dirty = false;
+                if (root.selected_note_id != "") {
+                    root.save_note(root.selected_note_id, root.note_title, root.note_content);
+                }
+            }
         }
     }
 }
