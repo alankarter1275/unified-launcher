@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::env;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -15,6 +15,7 @@ use zbus::{dbus_interface, dbus_proxy, zvariant::Value, Connection, ConnectionBu
 
 use unified_launcher::cache::{load_cache, save_cache};
 use unified_launcher::desktop::crawl_desktop_entries;
+use unified_launcher::file_index::{self, FileIndexHandle};
 use unified_launcher::folders::{path_suggestions, resolve_directory};
 use unified_launcher::notes::{self, Note, NoteSummary};
 use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_path};
@@ -436,6 +437,44 @@ fn delete_note(id: String) -> Result<Vec<NoteSummary>, String> {
     note_summaries()
 }
 
+fn resolve_openable_path(path: &str) -> Result<std::path::PathBuf, String> {
+    let path = Path::new(path);
+    if !path.is_absolute() {
+        return Err("File path must be absolute".to_string());
+    }
+    let path = std::fs::canonicalize(path)
+        .map_err(|error| format!("Could not access {}: {error}", path.display()))?;
+    let metadata = std::fs::metadata(&path)
+        .map_err(|error| format!("Could not inspect {}: {error}", path.display()))?;
+    if metadata.is_file() || metadata.is_dir() {
+        Ok(path)
+    } else {
+        Err(format!(
+            "{} is not a regular file or directory",
+            path.display()
+        ))
+    }
+}
+
+fn open_file(path: String) -> Result<String, String> {
+    let path = resolve_openable_path(&path)?;
+    std::process::Command::new("xdg-open")
+        .arg(&path)
+        .spawn()
+        .map(|_| format!("Opening {}", path.display()))
+        .map_err(|error| format!("Could not open {}: {error}", path.display()))
+}
+
+fn open_file_in_yazi(path: String) -> Result<String, String> {
+    let path = resolve_openable_path(&path)?;
+    std::process::Command::new("footclient")
+        .args(["-e", "yazi"])
+        .arg(&path)
+        .spawn()
+        .map(|_| "Opening Yazi".to_string())
+        .map_err(|error| format!("Could not open Yazi: {error}"))
+}
+
 async fn handle_quick_settings_action(
     state: &Arc<Mutex<DaemonState>>,
     inhibitors: &Arc<Mutex<Inhibitors>>,
@@ -455,6 +494,7 @@ async fn handle_client(
     stream: UnixStream,
     state: Arc<Mutex<DaemonState>>,
     inhibitors: Arc<Mutex<Inhibitors>>,
+    file_index: FileIndexHandle,
 ) {
     let (reader, mut writer) = stream.into_split();
     let note_list = match note_summaries() {
@@ -565,6 +605,16 @@ async fn handle_client(
                 let _ = write_server_message(&mut writer, &response).await;
                 continue;
             }
+            ClientMessage::SearchFiles { query } => {
+                let (results, indexing, indexed_count) = file_index::search(&file_index, &query);
+                let response = ServerMessage::FileSearchResults {
+                    results,
+                    indexing,
+                    indexed_count,
+                };
+                let _ = write_server_message(&mut writer, &response).await;
+                continue;
+            }
             ClientMessage::LaunchApp { app_id } => {
                 let app = {
                     let state = state.lock().await;
@@ -623,6 +673,10 @@ async fn handle_client(
                 notes: Some(notes),
                 ..DaemonActionPayload::default()
             }),
+            ClientMessage::OpenFile { path } => open_file(path).map(DaemonActionPayload::message),
+            ClientMessage::OpenFileInYazi { path } => {
+                open_file_in_yazi(path).map(DaemonActionPayload::message)
+            }
             ClientMessage::PowerAction { action } => handle_power_action(action)
                 .map(|()| "Power action started".to_string())
                 .map_err(|error| format!("Could not start power action: {error}"))
@@ -696,6 +750,7 @@ async fn main() {
         quick_settings,
     }));
     let inhibitors = Arc::new(Mutex::new(Inhibitors::default()));
+    let file_index = file_index::start();
 
     // Keep a successful D-Bus connection alive for the lifetime of the daemon,
     // but never make PolKit availability a requirement for launching apps.
@@ -741,7 +796,8 @@ async fn main() {
             Ok((stream, _address)) => {
                 let state = Arc::clone(&state);
                 let inhibitors = Arc::clone(&inhibitors);
-                tokio::spawn(handle_client(stream, state, inhibitors));
+                let file_index = Arc::clone(&file_index);
+                tokio::spawn(handle_client(stream, state, inhibitors, file_index));
             }
             Err(error) => error!("Launcher client connection failed: {error}"),
         }

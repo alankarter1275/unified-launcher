@@ -19,7 +19,7 @@ use unified_launcher::notes::{Note, NoteSummary};
 use unified_launcher::paths::socket_path;
 use unified_launcher::state::{FolderPin, PIN_SLOT_COUNT};
 use unified_launcher::types::{
-    json_line, ClientMessage, PowerAction, PowerProfile, QuickSettingsAction,
+    json_line, ClientMessage, FileSearchResult, PowerAction, PowerProfile, QuickSettingsAction,
     QuickSettingsSnapshot, ServerMessage,
 };
 
@@ -199,6 +199,31 @@ fn render_notes(ui: &LauncherWindow, notes: &[NoteSummary]) {
     ui.set_note_items(ModelRc::from(Rc::new(VecModel::from(items))));
 }
 
+fn render_file_results(
+    ui: &LauncherWindow,
+    results: Vec<FileSearchResult>,
+    indexing: bool,
+    indexed_count: usize,
+) {
+    let items: Vec<FileItem> = results
+        .into_iter()
+        .map(|result| FileItem {
+            name: result.name.into(),
+            path: result.path.into(),
+            display_path: result.display_path.into(),
+            is_directory: result.is_directory,
+        })
+        .collect();
+    ui.set_file_results(ModelRc::from(Rc::new(VecModel::from(items))));
+    ui.set_file_indexing(indexing);
+    let status = if indexing {
+        format!("Indexing {indexed_count} items…")
+    } else {
+        format!("{indexed_count} items indexed")
+    };
+    ui.set_file_index_status(status.into());
+}
+
 fn set_current_note(ui: &LauncherWindow, note: &Note) {
     ui.set_selected_note_id(note.id.clone().into());
     ui.set_note_title(note.title.clone().into());
@@ -250,6 +275,7 @@ fn handle_quick_settings_response(ui: &LauncherWindow, response: Result<ServerMe
         Ok(ServerMessage::Error { message }) => show_toast(ui, message),
         Ok(ServerMessage::FolderPathSuggestions { .. })
         | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
         | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
@@ -276,6 +302,7 @@ fn handle_folder_response(ui: &LauncherWindow, response: Result<ServerMessage, S
         }
         Ok(ServerMessage::FolderPathSuggestions { .. })
         | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
         | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
@@ -308,10 +335,25 @@ fn handle_note_response(
         }
         Ok(ServerMessage::NoteLoaded { note }) => set_current_note(ui, &note),
         Ok(ServerMessage::Error { message }) => show_toast(ui, message),
-        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
+        | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
         Err(error) => show_toast(ui, format!("Notes failed: {error}")),
+    }
+}
+
+fn handle_file_search_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::FileSearchResults {
+            results,
+            indexing,
+            indexed_count,
+        }) => render_file_results(ui, results, indexing, indexed_count),
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(_) => show_toast(ui, "Daemon returned an unexpected response"),
+        Err(error) => show_toast(ui, format!("File search failed: {error}")),
     }
 }
 
@@ -370,7 +412,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ServerMessage::ActionResult { .. }
         | ServerMessage::FolderPathSuggestions { .. }
-        | ServerMessage::NoteLoaded { .. } => {
+        | ServerMessage::NoteLoaded { .. }
+        | ServerMessage::FileSearchResults { .. } => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "daemon sent a non-initialization message before initialization",
@@ -577,6 +620,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
             Ok(ServerMessage::FolderPathSuggestions { .. })
             | Ok(ServerMessage::NoteLoaded { .. })
+            | Ok(ServerMessage::FileSearchResults { .. })
             | Ok(ServerMessage::Init { .. }) => {
                 show_toast(&ui, "Daemon returned an unexpected response");
             }
@@ -607,6 +651,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             &writer_launch_pin,
             &ClientMessage::LaunchApp {
                 app_id: app.app_id.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_file_search = Arc::clone(&writer);
+    let reader_file_search = Arc::clone(&reader);
+    let ui_file_search = ui.as_weak();
+    ui.on_file_search_changed(move |query| {
+        let ui = ui_file_search.unwrap();
+        let response = request_response(
+            &writer_file_search,
+            &reader_file_search,
+            &ClientMessage::SearchFiles {
+                query: query.to_string(),
+            },
+        );
+        handle_file_search_response(&ui, response);
+    });
+
+    let writer_open_file = Arc::clone(&writer);
+    ui.on_open_file(move |path| {
+        send_request(
+            &writer_open_file,
+            &ClientMessage::OpenFile {
+                path: path.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_open_file_yazi = Arc::clone(&writer);
+    ui.on_open_file_in_yazi(move |path| {
+        send_request(
+            &writer_open_file_yazi,
+            &ClientMessage::OpenFileInYazi {
+                path: path.to_string(),
             },
         );
         std::process::exit(0);

@@ -32,6 +32,13 @@ export struct CalendarDay {
     is_today: bool,
 }
 
+export struct FileItem {
+    name: string,
+    path: string,
+    display_path: string,
+    is_directory: bool,
+}
+
 // --------------------------------------------------------
 // CUSTOM COMPONENTS
 // --------------------------------------------------------
@@ -495,6 +502,83 @@ component NoteRow inherits Rectangle {
     }
 }
 
+component FileRow inherits Rectangle {
+    in property <string> name;
+    in property <string> path;
+    in property <string> display_path;
+    in property <bool> is_directory: false;
+    callback opened(string);
+    callback opened_in_yazi(string);
+
+    height: 48px;
+    border-radius: 12px;
+    border-width: 1px;
+    border-color: #3e4451;
+    background: row_ta.has-hover ? #2c323c : #252931;
+
+    row_ta := TouchArea {
+        width: 100%;
+        height: 100%;
+        mouse-cursor: pointer;
+        clicked => { root.opened(root.path); }
+    }
+
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 10px;
+        spacing: 10px;
+        Text {
+            text: root.is_directory ? "󰉋" : "󰈔";
+            color: root.is_directory ? #98c379 : #61afef;
+            font-family: "JetBrainsMono Nerd Font Propo";
+            font-size: 19px;
+            width: 24px;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 1px;
+            Text {
+                text: root.name;
+                color: #ffffff;
+                font-size: 13px;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: root.display_path;
+                color: #5c6370;
+                font-size: 10px;
+                overflow: elide;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            border-radius: 14px;
+            background: yazi_ta.has-hover ? #2c323c : transparent;
+            Text {
+                text: "󰉋";
+                color: #98c379;
+                font-family: "JetBrainsMono Nerd Font Propo";
+                font-size: 15px;
+                width: 100%;
+                height: 100%;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            yazi_ta := TouchArea {
+                width: 100%;
+                height: 100%;
+                mouse-cursor: pointer;
+                clicked => { root.opened_in_yazi(root.path); }
+            }
+        }
+    }
+}
+
 component UtilityPlaceholder inherits Rectangle {
     in property <string> icon;
     in property <string> title;
@@ -569,6 +653,12 @@ export component LauncherWindow inherits Window {
     in-out property <string> clock_text: "";
     in-out property <string> clock_date: "";
 
+    // File Finder state
+    in property <[FileItem]> file_results: [];
+    in-out property <string> file_query: "";
+    in-out property <bool> file_indexing: true;
+    in-out property <string> file_index_status: "Preparing file index…";
+
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
     in-out property <string> toast_message: "";
@@ -613,6 +703,9 @@ export component LauncherWindow inherits Window {
     callback calendar_previous_month();
     callback calendar_next_month();
     callback calendar_today();
+    callback file_search_changed(string);
+    callback open_file(string);
+    callback open_file_in_yazi(string);
     callback power_action(string);
     callback toggle_wifi();
     callback toggle_bluetooth();
@@ -1841,9 +1934,112 @@ export component LauncherWindow inherits Window {
                         }
                     }
 
+                    // ====== FILE FINDER VIEW ======
+                    Rectangle {
+                        visible: root.current_view == "files";
+                        width: 100%;
+                        height: 100%;
+
+                        VerticalLayout {
+                            padding: 16px;
+                            spacing: 9px;
+
+                            Text {
+                                text: "File Finder";
+                                color: #ffffff;
+                                font-size: 21px;
+                                font-weight: 700;
+                            }
+                            Text {
+                                text: root.file_index_status;
+                                color: root.file_indexing ? #e5c07b : #5c6370;
+                                font-size: 12px;
+                            }
+                            Rectangle {
+                                height: 40px;
+                                border-radius: 9px;
+                                border-width: 1px;
+                                border-color: file_search_input.has-focus ? #56b6c2 : #3e4451;
+                                background: #181a1f;
+                                Text {
+                                    visible: file_search_input.text == "";
+                                    text: "Search file names and paths…";
+                                    color: #5c6370;
+                                    font-size: 14px;
+                                    x: 12px;
+                                    height: 100%;
+                                    vertical-alignment: center;
+                                }
+                                file_search_input := TextInput {
+                                    text <=> root.file_query;
+                                    width: 100%;
+                                    height: 100%;
+                                    vertical-alignment: center;
+                                    font-size: 14px;
+                                    color: #ffffff;
+                                    single-line: true;
+                                    edited => { root.file_search_changed(self.text); }
+                                    key-pressed(event) => {
+                                        if (event.text == Key.Return && root.file_results.length > 0) {
+                                            root.open_file(root.file_results[0].path);
+                                            return accept;
+                                        }
+                                        return reject;
+                                    }
+                                }
+                            }
+                            Text {
+                                text: "Click a result to open it · use the folder icon to open it in Yazi";
+                                color: #5c6370;
+                                font-size: 11px;
+                            }
+
+                            Rectangle {
+                                vertical-stretch: 1;
+                                clip: true;
+                                if root.file_query == "": Text {
+                                    text: root.file_indexing ? "Indexing your home folder…" : "Start typing to find files";
+                                    color: #5c6370;
+                                    font-size: 14px;
+                                    width: 100%;
+                                    height: 100%;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                if root.file_query != "" && root.file_results.length == 0: Text {
+                                    text: root.file_indexing ? "Searching indexed files…" : "No matching files";
+                                    color: #5c6370;
+                                    font-size: 14px;
+                                    width: 100%;
+                                    height: 100%;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                                if root.file_results.length > 0: Flickable {
+                                    width: 100%;
+                                    height: 100%;
+                                    viewport-height: file_list.preferred-height;
+                                    file_list := VerticalLayout {
+                                        width: parent.width;
+                                        alignment: start;
+                                        spacing: 7px;
+                                        for file in root.file_results: FileRow {
+                                            name: file.name;
+                                            path: file.path;
+                                            display_path: file.display_path;
+                                            is_directory: file.is_directory;
+                                            opened(path) => { root.open_file(path); }
+                                            opened_in_yazi(path) => { root.open_file_in_yazi(path); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     // ====== FUTURE INLINE VIEWS ======
                     UtilityPlaceholder {
-                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "quick-settings" && root.current_view != "folders" && root.current_view != "calendar" && root.current_view != "notes";
+                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "quick-settings" && root.current_view != "folders" && root.current_view != "calendar" && root.current_view != "notes" && root.current_view != "files";
                         width: 100%;
                         height: 100%;
                         icon: root.current_view == "calendar" ? "󰃭" :
@@ -1944,6 +2140,12 @@ export component LauncherWindow inherits Window {
                     root.save_note(root.selected_note_id, root.note_title, root.note_content);
                 }
             }
+        }
+
+        file_index_timer := Timer {
+            interval: 750ms;
+            running: root.current_view == "files" && root.file_indexing;
+            triggered => { root.file_search_changed(root.file_query); }
         }
     }
 }

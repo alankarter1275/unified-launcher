@@ -125,6 +125,17 @@ pub enum QuickSettingsAction {
     OpenBluetoothManager,
 }
 
+/// A file or directory result returned by the daemon's home-directory index.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FileSearchResult {
+    pub name: String,
+    /// Absolute path used only for opening the result.
+    pub path: String,
+    /// Compact path shown in the UI, normally relative to HOME.
+    pub display_path: String,
+    pub is_directory: bool,
+}
+
 /// Commands a client can send to the per-user daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -163,6 +174,15 @@ pub enum ClientMessage {
     DeleteNote {
         id: String,
     },
+    SearchFiles {
+        query: String,
+    },
+    OpenFile {
+        path: String,
+    },
+    OpenFileInYazi {
+        path: String,
+    },
     PowerAction {
         action: PowerAction,
     },
@@ -195,6 +215,11 @@ pub enum ServerMessage {
     },
     NoteLoaded {
         note: Note,
+    },
+    FileSearchResults {
+        results: Vec<FileSearchResult>,
+        indexing: bool,
+        indexed_count: usize,
     },
     Error {
         message: String,
@@ -243,6 +268,9 @@ mod tests {
             | ClientMessage::LoadNote { .. }
             | ClientMessage::SaveNote { .. }
             | ClientMessage::DeleteNote { .. }
+            | ClientMessage::SearchFiles { .. }
+            | ClientMessage::OpenFile { .. }
+            | ClientMessage::OpenFileInYazi { .. }
             | ClientMessage::PowerAction { .. }
             | ClientMessage::QuickSettings { .. } => panic!("decoded the wrong message variant"),
         }
