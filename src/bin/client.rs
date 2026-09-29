@@ -18,7 +18,10 @@ use unified_launcher::calendar::{local_clock_text, month_grid, month_start, shif
 use unified_launcher::notes::{Note, NoteSummary};
 use unified_launcher::paths::socket_path;
 use unified_launcher::state::{FolderPin, PIN_SLOT_COUNT};
-use unified_launcher::types::{json_line, ClientMessage, PowerAction, ServerMessage};
+use unified_launcher::types::{
+    json_line, ClientMessage, FileSearchResult, PowerAction, PowerProfile, QuickSettingsAction,
+    QuickSettingsSnapshot, ServerMessage,
+};
 
 slint::include_modules!();
 
@@ -196,6 +199,31 @@ fn render_notes(ui: &LauncherWindow, notes: &[NoteSummary]) {
     ui.set_note_items(ModelRc::from(Rc::new(VecModel::from(items))));
 }
 
+fn render_file_results(
+    ui: &LauncherWindow,
+    results: Vec<FileSearchResult>,
+    indexing: bool,
+    indexed_count: usize,
+) {
+    let items: Vec<FileItem> = results
+        .into_iter()
+        .map(|result| FileItem {
+            name: result.name.into(),
+            path: result.path.into(),
+            display_path: result.display_path.into(),
+            is_directory: result.is_directory,
+        })
+        .collect();
+    ui.set_file_results(ModelRc::from(Rc::new(VecModel::from(items))));
+    ui.set_file_indexing(indexing);
+    let status = if indexing {
+        format!("Indexing {indexed_count} items…")
+    } else {
+        format!("{indexed_count} items indexed")
+    };
+    ui.set_file_index_status(status.into());
+}
+
 fn set_current_note(ui: &LauncherWindow, note: &Note) {
     ui.set_selected_note_id(note.id.clone().into());
     ui.set_note_title(note.title.clone().into());
@@ -214,52 +242,44 @@ fn show_toast(ui: &LauncherWindow, message: impl Into<SharedString>) {
     ui.set_toast_message(message.into());
 }
 
-fn render_vault(
-    ui: &LauncherWindow,
-    vault_items: &[unified_launcher::vault::VaultItem],
-    vault_locked: bool,
-) {
-    let items: Vec<VaultItem> = vault_items
-        .iter()
-        .map(|item| VaultItem {
-            id: item.id.clone().into(),
-            name: item.name.clone().into(),
-            secret: item.secret.clone().into(),
-            note: item.note.clone().into(),
-        })
-        .collect();
-    ui.set_vault_items(ModelRc::from(Rc::new(VecModel::from(items))));
-    ui.set_vault_locked(vault_locked);
+fn switch_status(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "On",
+        Some(false) => "Off",
+        None => "Unavailable",
+    }
 }
 
-fn handle_vault_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+fn apply_quick_settings(ui: &LauncherWindow, settings: &QuickSettingsSnapshot) {
+    ui.set_wifi_enabled(settings.wifi_enabled.unwrap_or(false));
+    ui.set_wifi_status(switch_status(settings.wifi_enabled).into());
+    ui.set_bluetooth_enabled(settings.bluetooth_enabled.unwrap_or(false));
+    ui.set_bluetooth_status(switch_status(settings.bluetooth_enabled).into());
+    ui.set_idle_inhibited(settings.idle_inhibited);
+    ui.set_sleep_inhibited(settings.sleep_inhibited);
+    ui.set_power_profile(settings.power_profile.as_ui_value().into());
+}
+
+fn handle_quick_settings_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
     match response {
         Ok(ServerMessage::ActionResult {
             message,
-            vault_items: Some(vault_items),
-            vault_locked: Some(vault_locked),
+            quick_settings,
             ..
         }) => {
-            render_vault(ui, &vault_items, vault_locked);
+            if let Some(settings) = quick_settings {
+                apply_quick_settings(ui, &settings);
+            }
             show_toast(ui, message);
         }
-        Ok(ServerMessage::ActionResult {
-            message,
-            vault_items: Some(vault_items),
-            ..
-        }) => {
-            render_vault(ui, &vault_items, false);
-            show_toast(ui, message);
-        }
-        Ok(ServerMessage::ActionResult { message, .. }) | Ok(ServerMessage::Error { message }) => {
-            show_toast(ui, message)
-        }
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
         Ok(ServerMessage::FolderPathSuggestions { .. })
         | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
         | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
-        Err(error) => show_toast(ui, format!("Vault action failed: {error}")),
+        Err(error) => show_toast(ui, format!("Quick Settings failed: {error}")),
     }
 }
 
@@ -282,6 +302,7 @@ fn handle_folder_response(ui: &LauncherWindow, response: Result<ServerMessage, S
         }
         Ok(ServerMessage::FolderPathSuggestions { .. })
         | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
         | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
@@ -314,10 +335,25 @@ fn handle_note_response(
         }
         Ok(ServerMessage::NoteLoaded { note }) => set_current_note(ui, &note),
         Ok(ServerMessage::Error { message }) => show_toast(ui, message),
-        Ok(ServerMessage::FolderPathSuggestions { .. }) | Ok(ServerMessage::Init { .. }) => {
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
+        | Ok(ServerMessage::Init { .. }) => {
             show_toast(ui, "Daemon returned an unexpected response");
         }
         Err(error) => show_toast(ui, format!("Notes failed: {error}")),
+    }
+}
+
+fn handle_file_search_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::FileSearchResults {
+            results,
+            indexing,
+            indexed_count,
+        }) => render_file_results(ui, results, indexing, indexed_count),
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(_) => show_toast(ui, "Daemon returned an unexpected response"),
+        Err(error) => show_toast(ui, format!("File search failed: {error}")),
     }
 }
 
@@ -363,19 +399,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
     let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
-    let (apps, pinned_app_ids, folder_pins, notes) = match initial_message {
+    let (apps, pinned_app_ids, folder_pins, notes, quick_settings) = match initial_message {
         ServerMessage::Init {
             apps,
             pinned_app_ids,
             folder_pins,
             notes,
-        } => (apps, pinned_app_ids, folder_pins, notes),
+            quick_settings,
+        } => (apps, pinned_app_ids, folder_pins, notes, quick_settings),
         ServerMessage::Error { message } => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
         }
         ServerMessage::ActionResult { .. }
         | ServerMessage::FolderPathSuggestions { .. }
-        | ServerMessage::NoteLoaded { .. } => {
+        | ServerMessage::NoteLoaded { .. }
+        | ServerMessage::FileSearchResults { .. } => {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "daemon sent a non-initialization message before initialization",
@@ -406,11 +444,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let apps = Rc::new(app_items);
     ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps).clone()))));
     ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
+    apply_quick_settings(&ui, &quick_settings);
     render_folders(&ui, &folder_pins);
     render_notes(&ui, &notes);
-
-    // Initial empty, locked vault state. The vault doesn't unlock until user interaction.
-    render_vault(&ui, &[], true);
 
     let pin_slots: PinSlots = Rc::new(RefCell::new(resolve_pin_slots(&pinned_app_ids, &apps)));
     render_pins(&ui, &pin_slots.borrow());
@@ -584,6 +620,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
             Ok(ServerMessage::FolderPathSuggestions { .. })
             | Ok(ServerMessage::NoteLoaded { .. })
+            | Ok(ServerMessage::FileSearchResults { .. })
             | Ok(ServerMessage::Init { .. }) => {
                 show_toast(&ui, "Daemon returned an unexpected response");
             }
@@ -617,6 +654,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
         std::process::exit(0);
+    });
+
+    let writer_file_search = Arc::clone(&writer);
+    let reader_file_search = Arc::clone(&reader);
+    let ui_file_search = ui.as_weak();
+    ui.on_file_search_changed(move |query| {
+        let ui = ui_file_search.unwrap();
+        let response = request_response(
+            &writer_file_search,
+            &reader_file_search,
+            &ClientMessage::SearchFiles {
+                query: query.to_string(),
+            },
+        );
+        handle_file_search_response(&ui, response);
     });
 
     let writer_open_file = Arc::clone(&writer);
@@ -737,67 +789,105 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         render_calendar(&ui, *month);
     });
 
-    let writer_vault_unlock = Arc::clone(&writer);
-    let reader_vault_unlock = Arc::clone(&reader);
-    let ui_vault_unlock = ui.as_weak();
-    ui.on_vault_unlock(move |password| {
-        let ui = ui_vault_unlock.unwrap();
+    let writer_wifi = Arc::clone(&writer);
+    let reader_wifi = Arc::clone(&reader);
+    let ui_wifi = ui.as_weak();
+    ui.on_toggle_wifi(move || {
+        let ui = ui_wifi.unwrap();
         let response = request_response(
-            &writer_vault_unlock,
-            &reader_vault_unlock,
-            &ClientMessage::VaultUnlock {
-                password: password.to_string(),
+            &writer_wifi,
+            &reader_wifi,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleWifi,
             },
         );
-        handle_vault_response(&ui, response);
-        ui.set_vault_password("".into());
+        handle_quick_settings_response(&ui, response);
     });
 
-    let writer_vault_lock = Arc::clone(&writer);
-    let reader_vault_lock = Arc::clone(&reader);
-    let ui_vault_lock = ui.as_weak();
-    ui.on_vault_lock(move || {
-        let ui = ui_vault_lock.unwrap();
+    let writer_bluetooth = Arc::clone(&writer);
+    let reader_bluetooth = Arc::clone(&reader);
+    let ui_bluetooth = ui.as_weak();
+    ui.on_toggle_bluetooth(move || {
+        let ui = ui_bluetooth.unwrap();
         let response = request_response(
-            &writer_vault_lock,
-            &reader_vault_lock,
-            &ClientMessage::VaultLock,
+            &writer_bluetooth,
+            &reader_bluetooth,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleBluetooth,
+            },
         );
-        handle_vault_response(&ui, response);
+        handle_quick_settings_response(&ui, response);
     });
 
-    let writer_vault_add = Arc::clone(&writer);
-    let reader_vault_add = Arc::clone(&reader);
-    let ui_vault_add = ui.as_weak();
-    ui.on_vault_add(move |name, secret, note| {
-        let ui = ui_vault_add.unwrap();
-        if name.as_str().trim().is_empty() || secret.as_str().trim().is_empty() {
-            show_toast(&ui, "Enter both a name and a secret");
+    let writer_idle = Arc::clone(&writer);
+    let reader_idle = Arc::clone(&reader);
+    let ui_idle = ui.as_weak();
+    ui.on_toggle_idle_inhibit(move || {
+        let ui = ui_idle.unwrap();
+        let response = request_response(
+            &writer_idle,
+            &reader_idle,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleIdleInhibit,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_sleep = Arc::clone(&writer);
+    let reader_sleep = Arc::clone(&reader);
+    let ui_sleep = ui.as_weak();
+    ui.on_toggle_sleep_inhibit(move || {
+        let ui = ui_sleep.unwrap();
+        let response = request_response(
+            &writer_sleep,
+            &reader_sleep,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleSleepInhibit,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_profile = Arc::clone(&writer);
+    let reader_profile = Arc::clone(&reader);
+    let ui_profile = ui.as_weak();
+    ui.on_set_power_profile(move |profile| {
+        let ui = ui_profile.unwrap();
+        let Some(profile) = PowerProfile::parse(profile.as_str()) else {
+            show_toast(&ui, "Unknown power profile");
             return;
-        }
+        };
         let response = request_response(
-            &writer_vault_add,
-            &reader_vault_add,
-            &ClientMessage::VaultAdd {
-                name: name.to_string(),
-                secret: secret.to_string(),
-                note: note.to_string(),
+            &writer_profile,
+            &reader_profile,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::SetPowerProfile { profile },
             },
         );
-        handle_vault_response(&ui, response);
+        handle_quick_settings_response(&ui, response);
     });
 
-    let writer_vault_delete = Arc::clone(&writer);
-    let reader_vault_delete = Arc::clone(&reader);
-    let ui_vault_delete = ui.as_weak();
-    ui.on_vault_delete(move |id| {
-        let ui = ui_vault_delete.unwrap();
-        let response = request_response(
-            &writer_vault_delete,
-            &reader_vault_delete,
-            &ClientMessage::VaultDelete { id: id.to_string() },
+    let writer_impala = Arc::clone(&writer);
+    ui.on_open_wifi_manager(move || {
+        send_request(
+            &writer_impala,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::OpenWifiManager,
+            },
         );
-        handle_vault_response(&ui, response);
+        std::process::exit(0);
+    });
+
+    let writer_bluetui = Arc::clone(&writer);
+    ui.on_open_bluetooth_manager(move || {
+        send_request(
+            &writer_bluetui,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::OpenBluetoothManager,
+            },
+        );
+        std::process::exit(0);
     });
 
     let writer_folder_suggestions = Arc::clone(&writer);

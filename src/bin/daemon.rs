@@ -15,18 +15,20 @@ use zbus::{dbus_interface, dbus_proxy, zvariant::Value, Connection, ConnectionBu
 
 use unified_launcher::cache::{load_cache, save_cache};
 use unified_launcher::desktop::crawl_desktop_entries;
+use unified_launcher::file_index::{self, FileIndexHandle};
 use unified_launcher::folders::{path_suggestions, resolve_directory};
 use unified_launcher::notes::{self, Note, NoteSummary};
 use unified_launcher::paths::{make_socket_private, remove_stale_socket, socket_path};
 use unified_launcher::power::handle_power_action;
+use unified_launcher::quick_settings::{self, Inhibitors};
 use unified_launcher::state::{
     load as load_launcher_state, save as save_launcher_state, FolderPin, LauncherState,
     PIN_SLOT_COUNT,
 };
 use unified_launcher::types::{
-    json_line, AppEntry, AppInit, ClientMessage, DaemonState, ServerMessage,
+    json_line, AppEntry, AppInit, ClientMessage, DaemonState, QuickSettingsAction,
+    QuickSettingsSnapshot, ServerMessage,
 };
-use unified_launcher::vault::{VaultItem, VaultManager};
 
 const POLKIT_AGENT_PATH: &str = "/org/freedesktop/PolicyKit1/AuthenticationAgent";
 const POLKIT_HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
@@ -34,11 +36,10 @@ const POLKIT_HELPER: &str = "/usr/lib/polkit-1/polkit-agent-helper-1";
 #[derive(Default)]
 struct DaemonActionPayload {
     message: String,
+    quick_settings: Option<QuickSettingsSnapshot>,
     folder_pins: Option<Vec<FolderPin>>,
     notes: Option<Vec<NoteSummary>>,
     note: Option<Note>,
-    vault_items: Option<Vec<VaultItem>>,
-    vault_locked: Option<bool>,
 }
 
 impl DaemonActionPayload {
@@ -474,10 +475,26 @@ fn open_file_in_yazi(path: String) -> Result<String, String> {
         .map_err(|error| format!("Could not open Yazi: {error}"))
 }
 
+async fn handle_quick_settings_action(
+    state: &Arc<Mutex<DaemonState>>,
+    inhibitors: &Arc<Mutex<Inhibitors>>,
+    action: QuickSettingsAction,
+) -> Result<(String, QuickSettingsSnapshot), String> {
+    let mut snapshot = { state.lock().await.quick_settings.clone() };
+    let message = {
+        let mut inhibitors = inhibitors.lock().await;
+        quick_settings::execute(action, &mut snapshot, &mut inhibitors).await
+    }?;
+
+    state.lock().await.quick_settings = snapshot.clone();
+    Ok((message, snapshot))
+}
+
 async fn handle_client(
     stream: UnixStream,
     state: Arc<Mutex<DaemonState>>,
-    vault: Arc<Mutex<VaultManager>>,
+    inhibitors: Arc<Mutex<Inhibitors>>,
+    file_index: FileIndexHandle,
 ) {
     let (reader, mut writer) = stream.into_split();
     let note_list = match note_summaries() {
@@ -487,7 +504,12 @@ async fn handle_client(
             Vec::new()
         }
     };
-    let (apps, pinned_app_ids, folder_pins): (Vec<AppInit>, Vec<Option<String>>, Vec<FolderPin>) = {
+    let (apps, pinned_app_ids, folder_pins, quick_settings): (
+        Vec<AppInit>,
+        Vec<Option<String>>,
+        Vec<FolderPin>,
+        QuickSettingsSnapshot,
+    ) = {
         let state = state.lock().await;
         let apps = state
             .apps
@@ -502,6 +524,7 @@ async fn handle_client(
             apps,
             state.launcher_state.pinned_apps.clone(),
             state.launcher_state.folder_pins.clone(),
+            state.quick_settings.clone(),
         )
     };
 
@@ -512,6 +535,7 @@ async fn handle_client(
             pinned_app_ids,
             folder_pins,
             notes: note_list,
+            quick_settings,
         },
     )
     .await
@@ -577,6 +601,16 @@ async fn handle_client(
                     Err(error) => ServerMessage::Error {
                         message: format!("Could not load note: {error}"),
                     },
+                };
+                let _ = write_server_message(&mut writer, &response).await;
+                continue;
+            }
+            ClientMessage::SearchFiles { query } => {
+                let (results, indexing, indexed_count) = file_index::search(&file_index, &query);
+                let response = ServerMessage::FileSearchResults {
+                    results,
+                    indexing,
+                    indexed_count,
                 };
                 let _ = write_server_message(&mut writer, &response).await;
                 continue;
@@ -647,53 +681,14 @@ async fn handle_client(
                 .map(|()| "Power action started".to_string())
                 .map_err(|error| format!("Could not start power action: {error}"))
                 .map(DaemonActionPayload::message),
-            ClientMessage::VaultUnlock { password } => {
-                let mut vault = vault.lock().await;
-                match vault.unlock(&password) {
-                    Ok(true) => {
-                        let items = vault.list_items().unwrap_or_default();
-                        Ok(DaemonActionPayload {
-                            message: "Vault unlocked".to_string(),
-                            vault_items: Some(items),
-                            vault_locked: Some(false),
-                            ..DaemonActionPayload::default()
-                        })
-                    }
-                    Ok(false) => Err("Incorrect password".to_string()),
-                    Err(e) => Err(format!("Could not unlock vault: {e}")),
-                }
-            }
-            ClientMessage::VaultLock => {
-                let mut vault = vault.lock().await;
-                vault.lock();
-                Ok(DaemonActionPayload {
-                    message: "Vault locked".to_string(),
-                    vault_items: Some(Vec::new()),
-                    vault_locked: Some(true),
-                    ..DaemonActionPayload::default()
-                })
-            }
-            ClientMessage::VaultAdd { name, secret, note } => {
-                let vault = vault.lock().await;
-                match vault.add_item(name, secret, note) {
-                    Ok(items) => Ok(DaemonActionPayload {
-                        message: "Secret added".to_string(),
-                        vault_items: Some(items),
+            ClientMessage::QuickSettings { action } => {
+                handle_quick_settings_action(&state, &inhibitors, action)
+                    .await
+                    .map(|(message, snapshot)| DaemonActionPayload {
+                        message,
+                        quick_settings: Some(snapshot),
                         ..DaemonActionPayload::default()
-                    }),
-                    Err(e) => Err(format!("Could not add secret: {e}")),
-                }
-            }
-            ClientMessage::VaultDelete { id } => {
-                let vault = vault.lock().await;
-                match vault.delete_item(&id) {
-                    Ok(items) => Ok(DaemonActionPayload {
-                        message: "Secret deleted".to_string(),
-                        vault_items: Some(items),
-                        ..DaemonActionPayload::default()
-                    }),
-                    Err(e) => Err(format!("Could not delete secret: {e}")),
-                }
+                    })
             }
         };
 
@@ -701,20 +696,18 @@ async fn handle_client(
             Ok(update) => ServerMessage::ActionResult {
                 success: true,
                 message: update.message,
+                quick_settings: update.quick_settings,
                 folder_pins: update.folder_pins,
                 notes: update.notes,
                 note: update.note,
-                vault_items: update.vault_items,
-                vault_locked: update.vault_locked,
             },
             Err(message) => ServerMessage::ActionResult {
                 success: false,
                 message,
+                quick_settings: None,
                 folder_pins: None,
                 notes: None,
                 note: None,
-                vault_items: None,
-                vault_locked: None,
             },
         };
         let _ = write_server_message(&mut writer, &response).await;
@@ -750,11 +743,14 @@ async fn main() {
             LauncherState::default()
         }
     };
+    let quick_settings = quick_settings::initial_snapshot().await;
     let state = Arc::new(Mutex::new(DaemonState {
         apps,
         launcher_state,
+        quick_settings,
     }));
-    let vault = Arc::new(Mutex::new(VaultManager::new()));
+    let inhibitors = Arc::new(Mutex::new(Inhibitors::default()));
+    let file_index = file_index::start();
 
     // Keep a successful D-Bus connection alive for the lifetime of the daemon,
     // but never make PolKit availability a requirement for launching apps.
@@ -799,8 +795,9 @@ async fn main() {
         match listener.accept().await {
             Ok((stream, _address)) => {
                 let state = Arc::clone(&state);
-                let vault = Arc::clone(&vault);
-                tokio::spawn(handle_client(stream, state, vault));
+                let inhibitors = Arc::clone(&inhibitors);
+                let file_index = Arc::clone(&file_index);
+                tokio::spawn(handle_client(stream, state, inhibitors, file_index));
             }
             Err(error) => error!("Launcher client connection failed: {error}"),
         }
