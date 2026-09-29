@@ -15,6 +15,11 @@ meval = "0.2"
 log = "0.4"
 env_logger = "0.11"
 chrono = { version = "0.4", features = ["clock"] }
+aes-gcm = "0.11.1"
+pbkdf2 = "0.13.0"
+sha2 = "0.11.0"
+hex = "0.4.3"
+rand = "0.8"
 
 [[bin]]
 name = "daemon"
