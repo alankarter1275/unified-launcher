@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::notes::{Note, NoteSummary};
 use crate::state::{FolderPin, LauncherState};
+use crate::vault::VaultItem;
 
 /// A fully resolved desktop entry with a stable desktop-entry identity.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,95 +48,6 @@ impl PowerAction {
     }
 }
 
-/// TLP profile choices exposed in Quick Settings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PowerProfile {
-    Automatic,
-    Performance,
-    Balanced,
-    PowerSaver,
-    Unknown,
-}
-
-impl PowerProfile {
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "automatic" => Some(Self::Automatic),
-            "performance" => Some(Self::Performance),
-            "balanced" => Some(Self::Balanced),
-            "power-saver" | "power_saver" => Some(Self::PowerSaver),
-            _ => None,
-        }
-    }
-
-    pub fn as_ui_value(self) -> &'static str {
-        match self {
-            Self::Automatic => "automatic",
-            Self::Performance => "performance",
-            Self::Balanced => "balanced",
-            Self::PowerSaver => "power-saver",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Automatic => "Automatic",
-            Self::Performance => "Performance",
-            Self::Balanced => "Balanced",
-            Self::PowerSaver => "Power saver",
-            Self::Unknown => "Unavailable",
-        }
-    }
-}
-
-/// A serializable snapshot of Quick Settings state for the UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QuickSettingsSnapshot {
-    pub wifi_enabled: Option<bool>,
-    pub bluetooth_enabled: Option<bool>,
-    pub idle_inhibited: bool,
-    pub sleep_inhibited: bool,
-    pub power_profile: PowerProfile,
-}
-
-impl Default for QuickSettingsSnapshot {
-    fn default() -> Self {
-        Self {
-            wifi_enabled: None,
-            bluetooth_enabled: None,
-            idle_inhibited: false,
-            sleep_inhibited: false,
-            power_profile: PowerProfile::Unknown,
-        }
-    }
-}
-
-/// Actions available from the inline Quick Settings view.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case")]
-pub enum QuickSettingsAction {
-    ToggleWifi,
-    ToggleBluetooth,
-    ToggleIdleInhibit,
-    ToggleSleepInhibit,
-    SetPowerProfile { profile: PowerProfile },
-    OpenWifiManager,
-    OpenBluetoothManager,
-}
-
-/// A file or directory result returned by the daemon's home-directory index.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileSearchResult {
-    pub name: String,
-    /// Absolute path used only for opening the result.
-    pub path: String,
-    /// Compact path shown in the UI, normally relative to HOME.
-    pub display_path: String,
-    pub is_directory: bool,
-}
-
 /// Commands a client can send to the per-user daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -174,9 +86,6 @@ pub enum ClientMessage {
     DeleteNote {
         id: String,
     },
-    SearchFiles {
-        query: String,
-    },
     OpenFile {
         path: String,
     },
@@ -186,8 +95,17 @@ pub enum ClientMessage {
     PowerAction {
         action: PowerAction,
     },
-    QuickSettings {
-        action: QuickSettingsAction,
+    VaultUnlock {
+        password: String,
+    },
+    VaultLock,
+    VaultAdd {
+        name: String,
+        secret: String,
+        note: String,
+    },
+    VaultDelete {
+        id: String,
     },
 }
 
@@ -200,26 +118,21 @@ pub enum ServerMessage {
         pinned_app_ids: Vec<Option<String>>,
         folder_pins: Vec<FolderPin>,
         notes: Vec<NoteSummary>,
-        quick_settings: QuickSettingsSnapshot,
     },
     ActionResult {
         success: bool,
         message: String,
-        quick_settings: Option<QuickSettingsSnapshot>,
         folder_pins: Option<Vec<FolderPin>>,
         notes: Option<Vec<NoteSummary>>,
         note: Option<Note>,
+        vault_items: Option<Vec<VaultItem>>,
+        vault_locked: Option<bool>,
     },
     FolderPathSuggestions {
         suggestions: Vec<String>,
     },
     NoteLoaded {
         note: Note,
-    },
-    FileSearchResults {
-        results: Vec<FileSearchResult>,
-        indexing: bool,
-        indexed_count: usize,
     },
     Error {
         message: String,
@@ -231,8 +144,6 @@ pub struct DaemonState {
     pub apps: Vec<AppEntry>,
     /// Persistent user choices owned by the long-lived daemon.
     pub launcher_state: LauncherState,
-    /// Runtime Quick Settings state. Inhibitor process handles stay daemon-local.
-    pub quick_settings: QuickSettingsSnapshot,
 }
 
 /// Serialize a protocol message as one newline-delimited JSON record.
@@ -268,11 +179,13 @@ mod tests {
             | ClientMessage::LoadNote { .. }
             | ClientMessage::SaveNote { .. }
             | ClientMessage::DeleteNote { .. }
-            | ClientMessage::SearchFiles { .. }
             | ClientMessage::OpenFile { .. }
             | ClientMessage::OpenFileInYazi { .. }
             | ClientMessage::PowerAction { .. }
-            | ClientMessage::QuickSettings { .. } => panic!("decoded the wrong message variant"),
+            | ClientMessage::VaultUnlock { .. }
+            | ClientMessage::VaultLock
+            | ClientMessage::VaultAdd { .. }
+            | ClientMessage::VaultDelete { .. } => panic!("decoded the wrong message variant"),
         }
     }
 

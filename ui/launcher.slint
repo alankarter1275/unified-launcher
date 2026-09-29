@@ -26,17 +26,17 @@ export struct NoteItem {
     title: string,
 }
 
+export struct VaultItem {
+    id: string,
+    name: string,
+    secret: string,
+    note: string,
+}
+
 export struct CalendarDay {
     label: string,
     in_current_month: bool,
     is_today: bool,
-}
-
-export struct FileItem {
-    name: string,
-    path: string,
-    display_path: string,
-    is_directory: bool,
 }
 
 // --------------------------------------------------------
@@ -213,84 +213,6 @@ component PinButton inherits Rectangle {
                 root.clicked(root.app_id);
             }
         }
-    }
-}
-
-component QuickToggleCard inherits Rectangle {
-    in property <string> icon;
-    in property <string> title;
-    in property <string> status;
-    in property <color> accent: #61afef;
-    in property <bool> active: false;
-    callback clicked;
-
-    height: 64px;
-    border-radius: 12px;
-    border-width: 1px;
-    border-color: root.active ? root.accent : #3e4451;
-    background: root.active ? #2c323c : #252931;
-
-    HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 14px;
-        spacing: 12px;
-
-        Text {
-            text: root.icon;
-            color: root.active ? root.accent : #abb2bf;
-            font-family: "JetBrainsMono Nerd Font Propo";
-            font-size: 23px;
-            width: 26px;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
-        VerticalLayout {
-            alignment: center;
-            spacing: 2px;
-            Text {
-                text: root.title;
-                color: #ffffff;
-                font-size: 13px;
-                font-weight: 700;
-            }
-            Text {
-                text: root.status;
-                color: root.active ? root.accent : #5c6370;
-                font-size: 11px;
-                font-weight: 600;
-            }
-        }
-        Rectangle {
-            horizontal-stretch: 1;
-        }
-        // The layout cell fills the card; the actual switch is centered in it.
-        Rectangle {
-            width: 34px;
-            height: parent.height;
-            Rectangle {
-                width: 34px;
-                height: 18px;
-                y: (parent.height - self.height) / 2;
-                border-radius: 9px;
-                background: root.active ? root.accent : #3e4451;
-                Rectangle {
-                    width: 14px;
-                    height: 14px;
-                    border-radius: 7px;
-                    x: root.active ? parent.width - self.width - 2px : 2px;
-                    y: (parent.height - self.height) / 2;
-                    background: #ffffff;
-                    animate x { duration: 160ms; easing: ease-out; }
-                }
-            }
-        }
-    }
-
-    ta := TouchArea {
-        width: 100%;
-        height: 100%;
-        mouse-cursor: pointer;
-        clicked => { root.clicked(); }
     }
 }
 
@@ -502,83 +424,6 @@ component NoteRow inherits Rectangle {
     }
 }
 
-component FileRow inherits Rectangle {
-    in property <string> name;
-    in property <string> path;
-    in property <string> display_path;
-    in property <bool> is_directory: false;
-    callback opened(string);
-    callback opened_in_yazi(string);
-
-    height: 48px;
-    border-radius: 12px;
-    border-width: 1px;
-    border-color: #3e4451;
-    background: row_ta.has-hover ? #2c323c : #252931;
-
-    row_ta := TouchArea {
-        width: 100%;
-        height: 100%;
-        mouse-cursor: pointer;
-        clicked => { root.opened(root.path); }
-    }
-
-    HorizontalLayout {
-        padding-left: 14px;
-        padding-right: 10px;
-        spacing: 10px;
-        Text {
-            text: root.is_directory ? "󰉋" : "󰈔";
-            color: root.is_directory ? #98c379 : #61afef;
-            font-family: "JetBrainsMono Nerd Font Propo";
-            font-size: 19px;
-            width: 24px;
-            vertical-alignment: center;
-            horizontal-alignment: center;
-        }
-        VerticalLayout {
-            alignment: center;
-            spacing: 1px;
-            Text {
-                text: root.name;
-                color: #ffffff;
-                font-size: 13px;
-                font-weight: 700;
-                overflow: elide;
-            }
-            Text {
-                text: root.display_path;
-                color: #5c6370;
-                font-size: 10px;
-                overflow: elide;
-            }
-        }
-        Rectangle { horizontal-stretch: 1; }
-        Rectangle {
-            width: 28px;
-            height: 28px;
-            border-radius: 14px;
-            background: yazi_ta.has-hover ? #2c323c : transparent;
-            Text {
-                text: "󰉋";
-                color: #98c379;
-                font-family: "JetBrainsMono Nerd Font Propo";
-                font-size: 15px;
-                width: 100%;
-                height: 100%;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-            yazi_ta := TouchArea {
-                width: 100%;
-                height: 100%;
-                mouse-cursor: pointer;
-                clicked => { root.opened_in_yazi(root.path); }
-            }
-        }
-    }
-}
-
 component UtilityPlaceholder inherits Rectangle {
     in property <string> icon;
     in property <string> title;
@@ -647,30 +492,24 @@ export component LauncherWindow inherits Window {
     in-out property <string> note_content: "";
     in-out property <bool> note_dirty: false;
 
+    // Vault state
+    in-out property <bool> vault_locked: true;
+    in property <[VaultItem]> vault_items: [];
+    in-out property <string> vault_password: "";
+    in-out property <string> vault_new_name: "";
+    in-out property <string> vault_new_secret: "";
+    in-out property <string> vault_new_note: "";
+    in-out property <bool> vault_form_visible: false;
+
     // Clock and calendar state
     in property <[CalendarDay]> calendar_days: [];
     in-out property <string> calendar_month: "";
     in-out property <string> clock_text: "";
     in-out property <string> clock_date: "";
 
-    // File Finder state
-    in property <[FileItem]> file_results: [];
-    in-out property <string> file_query: "";
-    in-out property <bool> file_indexing: true;
-    in-out property <string> file_index_status: "Preparing file index…";
-
     in-out property <int> absolute_index: 0;
     in property <string> ribbon_text: "Apps";
     in-out property <string> toast_message: "";
-
-    // Quick Settings state
-    in property <bool> wifi_enabled: false;
-    in property <string> wifi_status: "Unavailable";
-    in property <bool> bluetooth_enabled: false;
-    in property <string> bluetooth_status: "Unavailable";
-    in property <bool> idle_inhibited: false;
-    in property <bool> sleep_inhibited: false;
-    in property <string> power_profile: "unknown";
 
     // Calculator mode
     in property <bool> calc_mode: false;
@@ -700,20 +539,16 @@ export component LauncherWindow inherits Window {
     callback load_note(string);
     callback save_note(string, string, string);
     callback delete_note(string);
+    callback vault_unlock(string);
+    callback vault_lock();
+    callback vault_add(string, string, string);
+    callback vault_delete(string);
     callback calendar_previous_month();
     callback calendar_next_month();
     callback calendar_today();
-    callback file_search_changed(string);
     callback open_file(string);
     callback open_file_in_yazi(string);
     callback power_action(string);
-    callback toggle_wifi();
-    callback toggle_bluetooth();
-    callback toggle_idle_inhibit();
-    callback toggle_sleep_inhibit();
-    callback set_power_profile(string);
-    callback open_wifi_manager();
-    callback open_bluetooth_manager();
     callback close_requested();
 
     public function focus_search() { search_input.focus(); }
@@ -932,18 +767,6 @@ export component LauncherWindow inherits Window {
                         spacing: 12px;
 
                         SidebarButton {
-                            icon: "󰒓";
-                            icon_color: #61afef;
-                            is_active: root.current_view == "quick-settings";
-                            clicked => {
-                                if (root.current_view == "quick-settings") {
-                                    root.show_main();
-                                } else {
-                                    root.current_view = "quick-settings";
-                                }
-                            }
-                        }
-                        SidebarButton {
                             icon: "󰃭";
                             icon_color: #e5c07b;
                             is_active: root.current_view == "calendar";
@@ -968,6 +791,19 @@ export component LauncherWindow inherits Window {
                             }
                         }
                         SidebarButton {
+                            icon: "󰌋";
+                            icon_color: #e5c07b;
+                            is_active: root.current_view == "vault";
+                            clicked => {
+                                if (root.current_view == "vault") {
+                                    root.show_main();
+                                } else {
+                                    root.current_view = "vault";
+                                    root.vault_password = "";
+                                }
+                            }
+                        }
+                        SidebarButton {
                             icon: "󰉋";
                             icon_color: #98c379;
                             is_active: root.current_view == "folders";
@@ -976,18 +812,6 @@ export component LauncherWindow inherits Window {
                                     root.show_main();
                                 } else {
                                     root.current_view = "folders";
-                                }
-                            }
-                        }
-                        SidebarButton {
-                            icon: "󰈞";
-                            icon_color: #56b6c2;
-                            is_active: root.current_view == "files";
-                            clicked => {
-                                if (root.current_view == "files") {
-                                    root.show_main();
-                                } else {
-                                    root.current_view = "files";
                                 }
                             }
                         }
@@ -1356,120 +1180,6 @@ export component LauncherWindow inherits Window {
                                         horizontal-alignment: center;
                                         vertical-alignment: top;
                                     }
-                                }
-                            }
-                        }
-                    }
-
-                    // ====== QUICK SETTINGS VIEW ======
-                    Rectangle {
-                        visible: root.current_view == "quick-settings";
-                        width: 100%;
-                        height: 100%;
-
-                        VerticalLayout {
-                            padding: 18px;
-                            spacing: 10px;
-
-                            Text {
-                                text: "Quick Settings";
-                                color: #ffffff;
-                                font-size: 21px;
-                                font-weight: 700;
-                            }
-                            Text {
-                                text: "Toggle radios and idle behavior, or open your preferred managers.";
-                                color: #5c6370;
-                                font-size: 12px;
-                            }
-
-                            GridLayout {
-                                spacing: 10px;
-                                Row {
-                                    QuickToggleCard {
-                                        icon: "󰖩";
-                                        title: "Wi-Fi";
-                                        status: root.wifi_status;
-                                        accent: #61afef;
-                                        active: root.wifi_enabled;
-                                        clicked => { root.toggle_wifi(); }
-                                    }
-                                    QuickToggleCard {
-                                        icon: "󰂯";
-                                        title: "Bluetooth";
-                                        status: root.bluetooth_status;
-                                        accent: #56b6c2;
-                                        active: root.bluetooth_enabled;
-                                        clicked => { root.toggle_bluetooth(); }
-                                    }
-                                }
-                                Row {
-                                    QuickToggleCard {
-                                        icon: "󰅶";
-                                        title: "Keep screen awake";
-                                        status: root.idle_inhibited ? "On" : "Off";
-                                        accent: #e5c07b;
-                                        active: root.idle_inhibited;
-                                        clicked => { root.toggle_idle_inhibit(); }
-                                    }
-                                    QuickToggleCard {
-                                        icon: "󰒲";
-                                        title: "Prevent suspend";
-                                        status: root.sleep_inhibited ? "On" : "Off";
-                                        accent: #c678dd;
-                                        active: root.sleep_inhibited;
-                                        clicked => { root.toggle_sleep_inhibit(); }
-                                    }
-                                }
-                            }
-
-                            HorizontalLayout {
-                                spacing: 10px;
-                                QuickActionButton {
-                                    horizontal-stretch: 1;
-                                    icon: "󰖩";
-                                    label: "Open Impala";
-                                    clicked => { root.open_wifi_manager(); }
-                                }
-                                QuickActionButton {
-                                    horizontal-stretch: 1;
-                                    icon: "󰂯";
-                                    label: "Open bluetui";
-                                    clicked => { root.open_bluetooth_manager(); }
-                                }
-                            }
-
-                            Text {
-                                text: "TLP power profile";
-                                color: #abb2bf;
-                                font-size: 12px;
-                                font-weight: 700;
-                            }
-                            HorizontalLayout {
-                                spacing: 7px;
-                                ProfileButton {
-                                    horizontal-stretch: 1;
-                                    label: "Auto";
-                                    active: root.power_profile == "automatic";
-                                    clicked => { root.set_power_profile("automatic"); }
-                                }
-                                ProfileButton {
-                                    horizontal-stretch: 1;
-                                    label: "Performance";
-                                    active: root.power_profile == "performance";
-                                    clicked => { root.set_power_profile("performance"); }
-                                }
-                                ProfileButton {
-                                    horizontal-stretch: 1;
-                                    label: "Balanced";
-                                    active: root.power_profile == "balanced";
-                                    clicked => { root.set_power_profile("balanced"); }
-                                }
-                                ProfileButton {
-                                    horizontal-stretch: 1;
-                                    label: "Power saver";
-                                    active: root.power_profile == "power-saver";
-                                    clicked => { root.set_power_profile("power-saver"); }
                                 }
                             }
                         }
@@ -1934,102 +1644,288 @@ export component LauncherWindow inherits Window {
                         }
                     }
 
-                    // ====== FILE FINDER VIEW ======
+                    // ====== VAULT VIEW ======
                     Rectangle {
-                        visible: root.current_view == "files";
+                        visible: root.current_view == "vault";
                         width: 100%;
                         height: 100%;
 
-                        VerticalLayout {
-                            padding: 16px;
-                            spacing: 9px;
+                        if root.vault_locked: VerticalLayout {
+                            alignment: center;
+                            padding: 24px;
+                            spacing: 16px;
 
                             Text {
-                                text: "File Finder";
+                                text: "󰌋";
+                                color: #e5c07b;
+                                font-family: "JetBrainsMono Nerd Font Propo";
+                                font-size: 48px;
+                                horizontal-alignment: center;
+                            }
+                            Text {
+                                text: "Unlock Vault";
                                 color: #ffffff;
                                 font-size: 21px;
                                 font-weight: 700;
-                            }
-                            Text {
-                                text: root.file_index_status;
-                                color: root.file_indexing ? #e5c07b : #5c6370;
-                                font-size: 12px;
+                                horizontal-alignment: center;
                             }
                             Rectangle {
                                 height: 40px;
+                                width: 280px;
                                 border-radius: 9px;
                                 border-width: 1px;
-                                border-color: file_search_input.has-focus ? #56b6c2 : #3e4451;
+                                border-color: vault_password_input.has-focus ? #e5c07b : #3e4451;
                                 background: #181a1f;
                                 Text {
-                                    visible: file_search_input.text == "";
-                                    text: "Search file names and paths…";
+                                    visible: vault_password_input.text == "";
+                                    text: "Master password...";
                                     color: #5c6370;
                                     font-size: 14px;
                                     x: 12px;
                                     height: 100%;
                                     vertical-alignment: center;
                                 }
-                                file_search_input := TextInput {
-                                    text <=> root.file_query;
+                                vault_password_input := TextInput {
+                                    text <=> root.vault_password;
                                     width: 100%;
                                     height: 100%;
                                     vertical-alignment: center;
                                     font-size: 14px;
                                     color: #ffffff;
                                     single-line: true;
-                                    edited => { root.file_search_changed(self.text); }
-                                    key-pressed(event) => {
-                                        if (event.text == Key.Return && root.file_results.length > 0) {
-                                            root.open_file(root.file_results[0].path);
-                                            return accept;
+                                    input-type: password;
+                                    accepted => { root.vault_unlock(self.text); }
+                                }
+                            }
+                        }
+
+                        if !root.vault_locked: VerticalLayout {
+                            padding: 16px;
+                            spacing: 10px;
+
+                            HorizontalLayout {
+                                height: 36px;
+                                spacing: 10px;
+                                Rectangle {
+                                    width: 32px;
+                                    height: 32px;
+                                    border-radius: 16px;
+                                    background: add_vault_ta.has-hover ? #2c323c : #252931;
+                                    Text {
+                                        text: "+";
+                                        color: #e5c07b;
+                                        font-size: 22px;
+                                        width: 100%;
+                                        height: 100%;
+                                        horizontal-alignment: center;
+                                        vertical-alignment: center;
+                                    }
+                                    add_vault_ta := TouchArea {
+                                        width: 100%;
+                                        height: 100%;
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            root.vault_form_visible = true;
+                                            root.vault_new_name = "";
+                                            root.vault_new_secret = "";
+                                            root.vault_new_note = "";
                                         }
-                                        return reject;
+                                    }
+                                }
+                                Text {
+                                    text: root.vault_form_visible ? "Add Secret" : "Vault";
+                                    color: #ffffff;
+                                    font-size: 21px;
+                                    font-weight: 700;
+                                    vertical-alignment: center;
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                QuickActionButton {
+                                    icon: "󰌾";
+                                    label: "Lock";
+                                    clicked => { root.vault_lock(); }
+                                }
+                            }
+
+                            if root.vault_form_visible: Rectangle {
+                                vertical-stretch: 1;
+                                VerticalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: "Name";
+                                        color: #abb2bf;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                    }
+                                    Rectangle {
+                                        height: 38px;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: vault_name_input.has-focus ? #e5c07b : #3e4451;
+                                        background: #181a1f;
+                                        vault_name_input := TextInput {
+                                            text <=> root.vault_new_name;
+                                            width: 100%;
+                                            height: 100%;
+                                            vertical-alignment: center;
+                                            font-size: 14px;
+                                            color: #ffffff;
+                                            single-line: true;
+                                            accepted => { vault_secret_input.focus(); }
+                                        }
+                                    }
+                                    Text {
+                                        text: "Secret";
+                                        color: #abb2bf;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                    }
+                                    Rectangle {
+                                        height: 38px;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: vault_secret_input.has-focus ? #e5c07b : #3e4451;
+                                        background: #181a1f;
+                                        vault_secret_input := TextInput {
+                                            text <=> root.vault_new_secret;
+                                            width: 100%;
+                                            height: 100%;
+                                            vertical-alignment: center;
+                                            font-size: 14px;
+                                            color: #ffffff;
+                                            single-line: true;
+                                            accepted => { vault_note_input.focus(); }
+                                        }
+                                    }
+                                    Text {
+                                        text: "Note (Optional)";
+                                        color: #abb2bf;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                    }
+                                    Rectangle {
+                                        height: 38px;
+                                        border-radius: 8px;
+                                        border-width: 1px;
+                                        border-color: vault_note_input.has-focus ? #e5c07b : #3e4451;
+                                        background: #181a1f;
+                                        vault_note_input := TextInput {
+                                            text <=> root.vault_new_note;
+                                            width: 100%;
+                                            height: 100%;
+                                            vertical-alignment: center;
+                                            font-size: 14px;
+                                            color: #ffffff;
+                                            single-line: true;
+                                        }
+                                    }
+                                    Rectangle { vertical-stretch: 1; }
+                                    HorizontalLayout {
+                                        spacing: 10px;
+                                        QuickActionButton {
+                                            horizontal-stretch: 1;
+                                            icon: "✕";
+                                            label: "Cancel";
+                                            clicked => { root.vault_form_visible = false; }
+                                        }
+                                        QuickActionButton {
+                                            horizontal-stretch: 1;
+                                            icon: "+";
+                                            label: "Save";
+                                            clicked => {
+                                                root.vault_add(root.vault_new_name, root.vault_new_secret, root.vault_new_note);
+                                                root.vault_form_visible = false;
+                                            }
+                                        }
                                     }
                                 }
                             }
-                            Text {
-                                text: "Click a result to open it · use the folder icon to open it in Yazi";
-                                color: #5c6370;
-                                font-size: 11px;
-                            }
 
-                            Rectangle {
+                            if !root.vault_form_visible: Rectangle {
                                 vertical-stretch: 1;
-                                clip: true;
-                                if root.file_query == "": Text {
-                                    text: root.file_indexing ? "Indexing your home folder…" : "Start typing to find files";
+                                if root.vault_items.length == 0: Text {
+                                    text: "Vault is empty\nUse + to add an API key or secret.";
                                     color: #5c6370;
                                     font-size: 14px;
-                                    width: 100%;
-                                    height: 100%;
                                     horizontal-alignment: center;
                                     vertical-alignment: center;
-                                }
-                                if root.file_query != "" && root.file_results.length == 0: Text {
-                                    text: root.file_indexing ? "Searching indexed files…" : "No matching files";
-                                    color: #5c6370;
-                                    font-size: 14px;
                                     width: 100%;
                                     height: 100%;
-                                    horizontal-alignment: center;
-                                    vertical-alignment: center;
                                 }
-                                if root.file_results.length > 0: Flickable {
+                                if root.vault_items.length > 0: Flickable {
                                     width: 100%;
                                     height: 100%;
-                                    viewport-height: file_list.preferred-height;
-                                    file_list := VerticalLayout {
+                                    viewport-height: vault_list.preferred-height;
+                                    vault_list := VerticalLayout {
                                         width: parent.width;
                                         alignment: start;
                                         spacing: 7px;
-                                        for file in root.file_results: FileRow {
-                                            name: file.name;
-                                            path: file.path;
-                                            display_path: file.display_path;
-                                            is_directory: file.is_directory;
-                                            opened(path) => { root.open_file(path); }
-                                            opened_in_yazi(path) => { root.open_file_in_yazi(path); }
+                                        for item in root.vault_items: Rectangle {
+                                            height: 48px;
+                                            border-radius: 12px;
+                                            border-width: 1px;
+                                            border-color: #3e4451;
+                                            background: vault_row_ta.has-hover ? #2c323c : #252931;
+
+                                            vault_row_ta := TouchArea {
+                                                width: 100%;
+                                                height: 100%;
+                                                mouse-cursor: pointer;
+                                            }
+
+                                            HorizontalLayout {
+                                                padding-left: 14px;
+                                                padding-right: 10px;
+                                                spacing: 10px;
+                                                Text {
+                                                    text: "󰌋";
+                                                    color: #e5c07b;
+                                                    font-family: "JetBrainsMono Nerd Font Propo";
+                                                    font-size: 20px;
+                                                    width: 24px;
+                                                    vertical-alignment: center;
+                                                    horizontal-alignment: center;
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    spacing: 1px;
+                                                    Text {
+                                                        text: item.name;
+                                                        color: #ffffff;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        overflow: elide;
+                                                    }
+                                                    Text {
+                                                        text: item.note;
+                                                        color: #5c6370;
+                                                        font-size: 10px;
+                                                        overflow: elide;
+                                                    }
+                                                }
+                                                Rectangle { horizontal-stretch: 1; }
+                                                Rectangle {
+                                                    width: 26px;
+                                                    height: 26px;
+                                                    border-radius: 13px;
+                                                    background: delete_vault_ta.has-hover ? #4b2a2e : transparent;
+                                                    Text {
+                                                        text: "✕";
+                                                        color: #e06c75;
+                                                        font-size: 12px;
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                    }
+                                                    delete_vault_ta := TouchArea {
+                                                        width: 100%;
+                                                        height: 100%;
+                                                        mouse-cursor: pointer;
+                                                        clicked => { root.vault_delete(item.id); }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -2039,7 +1935,7 @@ export component LauncherWindow inherits Window {
 
                     // ====== FUTURE INLINE VIEWS ======
                     UtilityPlaceholder {
-                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "quick-settings" && root.current_view != "folders" && root.current_view != "calendar" && root.current_view != "notes" && root.current_view != "files";
+                        visible: root.current_view != "main" && root.current_view != "power" && root.current_view != "folders" && root.current_view != "calendar" && root.current_view != "notes" && root.current_view != "vault";
                         width: 100%;
                         height: 100%;
                         icon: root.current_view == "calendar" ? "󰃭" :
@@ -2047,11 +1943,10 @@ export component LauncherWindow inherits Window {
                             root.current_view == "folders" ? "󰉋" : "󰈞";
                         title: root.current_view == "calendar" ? "Clock & Calendar" :
                             root.current_view == "notes" ? "Notes" :
-                            root.current_view == "folders" ? "Folders" : "File Finder";
+                            "Folders";
                         description: root.current_view == "calendar" ? "A simple clock and calendar are planned for a later phase." :
                             root.current_view == "notes" ? "Named local notes are planned for a later phase." :
-                            root.current_view == "folders" ? "Pinned Yazi folders are planned for a later phase." :
-                            "Fast filename and path search is planned for a later phase.";
+                            "Pinned Yazi folders are planned for a later phase.";
                     }
 
                     // ====== POWER VIEW ======
@@ -2140,12 +2035,6 @@ export component LauncherWindow inherits Window {
                     root.save_note(root.selected_note_id, root.note_title, root.note_content);
                 }
             }
-        }
-
-        file_index_timer := Timer {
-            interval: 750ms;
-            running: root.current_view == "files" && root.file_indexing;
-            triggered => { root.file_search_changed(root.file_query); }
         }
     }
 }
