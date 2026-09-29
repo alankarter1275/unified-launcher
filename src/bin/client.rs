@@ -1,69 +1,123 @@
+use std::cell::RefCell;
 use std::env;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
+use chrono::{Local, NaiveDate};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
-use meval;
-use serde::Deserialize;
-use slint::{Image, ModelRc, SharedString, VecModel};
+use slint::{Image, ModelRc, SharedString, Timer, TimerMode, VecModel};
 
-use unified_launcher::types::socket_path;
+use unified_launcher::calendar::{local_clock_text, month_grid, month_start, shift_month};
+use unified_launcher::notes::{Note, NoteSummary};
+use unified_launcher::paths::socket_path;
+use unified_launcher::state::{FolderPin, PIN_SLOT_COUNT};
+use unified_launcher::types::{
+    json_line, ClientMessage, FileSearchResult, PowerAction, PowerProfile, QuickSettingsAction,
+    QuickSettingsSnapshot, ServerMessage,
+};
 
 slint::include_modules!();
 
-#[derive(Deserialize)]
-struct AppInit {
-    name: String,
-    icon: Option<String>,
-}
-#[derive(Deserialize)]
-struct InitPayload {
-    apps: Vec<AppInit>,
-}
+type PinSlots = Rc<RefCell<Vec<Option<AppItem>>>>;
 
-/// Try to spawn the daemon if it's not running.
-fn ensure_daemon_running(sock_path: &str) -> bool {
-    if Path::new(sock_path).exists() {
-        return true;
+/// Connect to the daemon, starting it only when it is genuinely unavailable.
+fn connect_or_start_daemon(socket_path: &Path) -> io::Result<UnixStream> {
+    if let Ok(stream) = UnixStream::connect(socket_path) {
+        return Ok(stream);
     }
 
-    let daemon_path = if let Ok(exe) = env::current_exe() {
-        let mut d = exe.clone();
-        d.pop();
-        d.push("daemon");
-        d
-    } else {
-        eprintln!("[Client] Could not determine executable path.");
-        return false;
-    };
+    let daemon_path = env::current_exe()
+        .map(|mut executable| {
+            executable.pop();
+            executable.push("daemon");
+            executable
+        })
+        .map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("could not determine daemon executable path: {error}"),
+            )
+        })?;
 
-    eprintln!("[Client] Daemon not running. Starting it...");
+    eprintln!("[Client] Daemon is not reachable. Starting it...");
+    let child = std::process::Command::new(&daemon_path)
+        .spawn()
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("could not start daemon {}: {error}", daemon_path.display()),
+            )
+        })?;
 
-    match std::process::Command::new(&daemon_path).spawn() {
-        Ok(child) => {
-            for _ in 0..20 {
-                if Path::new(sock_path).exists() {
-                    return true;
-                }
-                thread::sleep(Duration::from_millis(100));
-            }
-            eprintln!("[Client] Daemon started (pid {}), waiting...", child.id());
-            thread::sleep(Duration::from_millis(500));
-            Path::new(sock_path).exists()
+    let mut last_error = None;
+    for _ in 0..25 {
+        match UnixStream::connect(socket_path) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
         }
-        Err(e) => {
-            eprintln!("[Client] Could not start daemon: {}", e);
-            false
-        }
+        thread::sleep(Duration::from_millis(100));
     }
+
+    let reason = last_error
+        .map(|error| error.to_string())
+        .unwrap_or_else(|| "unknown connection error".to_string());
+    Err(io::Error::new(
+        io::ErrorKind::ConnectionRefused,
+        format!(
+            "daemon started as pid {}, but socket {} is unavailable: {reason}",
+            child.id(),
+            socket_path.display()
+        ),
+    ))
+}
+
+fn encode_request(request: &ClientMessage) -> io::Result<String> {
+    json_line(request).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn write_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) -> io::Result<()> {
+    let payload = encode_request(request)?;
+    let mut stream = writer.lock().map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "daemon writer lock was poisoned",
+        )
+    })?;
+    stream.write_all(payload.as_bytes())?;
+    stream.flush()
+}
+
+fn send_request(writer: &Arc<Mutex<UnixStream>>, request: &ClientMessage) {
+    if let Err(error) = write_request(writer, request) {
+        eprintln!("[Client] Could not send daemon request: {error}");
+    }
+}
+
+fn request_response(
+    writer: &Arc<Mutex<UnixStream>>,
+    reader: &Arc<Mutex<BufReader<UnixStream>>>,
+    request: &ClientMessage,
+) -> Result<ServerMessage, String> {
+    write_request(writer, request).map_err(|error| error.to_string())?;
+
+    let mut reader = reader
+        .lock()
+        .map_err(|_| "daemon reader lock was poisoned".to_string())?;
+    let mut line = String::new();
+    let bytes_read = reader
+        .read_line(&mut line)
+        .map_err(|error| error.to_string())?;
+    if bytes_read == 0 {
+        return Err("daemon closed the connection before acknowledging the request".to_string());
+    }
+    serde_json::from_str(&line).map_err(|error| error.to_string())
 }
 
 fn copy_to_clipboard(text: &str) {
@@ -74,78 +128,355 @@ fn copy_to_clipboard(text: &str) {
         .spawn();
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let sock_path = socket_path();
+fn resolve_pin_slots(pinned_app_ids: &[Option<String>], apps: &[AppItem]) -> Vec<Option<AppItem>> {
+    (0..PIN_SLOT_COUNT)
+        .map(|slot| {
+            pinned_app_ids
+                .get(slot)
+                .and_then(Option::as_deref)
+                .and_then(|app_id| {
+                    apps.iter()
+                        .find(|app| app.app_id.as_str() == app_id)
+                        .cloned()
+                })
+        })
+        .collect()
+}
 
-    if !ensure_daemon_running(&sock_path) {
-        eprintln!("[Client] Daemon failed to start.");
-        std::process::exit(1);
+fn pin_item(slot: usize, app: Option<&AppItem>) -> PinItem {
+    match app {
+        Some(app) => PinItem {
+            app_id: app.app_id.clone(),
+            text: app.text.clone(),
+            shortcut: format!("Alt+{}", slot + 1).into(),
+            has_native_icon: app.has_native_icon,
+            native_icon: app.native_icon.clone(),
+            text_icon: app.text_icon.clone(),
+        },
+        None => PinItem {
+            app_id: "".into(),
+            text: "".into(),
+            shortcut: format!("Alt+{}", slot + 1).into(),
+            has_native_icon: false,
+            native_icon: Image::default(),
+            text_icon: "+".into(),
+        },
     }
+}
+
+fn render_pins(ui: &LauncherWindow, pins: &[Option<AppItem>]) {
+    let items: Vec<PinItem> = (0..PIN_SLOT_COUNT)
+        .map(|slot| pin_item(slot, pins.get(slot).and_then(Option::as_ref)))
+        .collect();
+    ui.set_pinned_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
+fn render_folders(ui: &LauncherWindow, folders: &[FolderPin]) {
+    let items: Vec<FolderItem> = folders
+        .iter()
+        .map(|folder| FolderItem {
+            id: folder.id.clone().into(),
+            label: folder.label.clone().into(),
+            path: folder.path.clone().into(),
+        })
+        .collect();
+    ui.set_folder_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
+fn render_folder_suggestions(ui: &LauncherWindow, suggestions: Vec<String>) {
+    let suggestions: Vec<SharedString> = suggestions.into_iter().map(Into::into).collect();
+    ui.set_folder_suggestions(ModelRc::from(Rc::new(VecModel::from(suggestions))));
+}
+
+fn render_notes(ui: &LauncherWindow, notes: &[NoteSummary]) {
+    let items: Vec<NoteItem> = notes
+        .iter()
+        .map(|note| NoteItem {
+            id: note.id.clone().into(),
+            title: note.title.clone().into(),
+        })
+        .collect();
+    ui.set_note_items(ModelRc::from(Rc::new(VecModel::from(items))));
+}
+
+fn render_file_results(
+    ui: &LauncherWindow,
+    results: Vec<FileSearchResult>,
+    indexing: bool,
+    indexed_count: usize,
+) {
+    let items: Vec<FileItem> = results
+        .into_iter()
+        .map(|result| FileItem {
+            name: result.name.into(),
+            path: result.path.into(),
+            display_path: result.display_path.into(),
+            is_directory: result.is_directory,
+        })
+        .collect();
+    ui.set_file_results(ModelRc::from(Rc::new(VecModel::from(items))));
+    ui.set_file_indexing(indexing);
+    let status = if indexing {
+        format!("Indexing {indexed_count} items…")
+    } else {
+        format!("{indexed_count} items indexed")
+    };
+    ui.set_file_index_status(status.into());
+}
+
+fn set_current_note(ui: &LauncherWindow, note: &Note) {
+    ui.set_selected_note_id(note.id.clone().into());
+    ui.set_note_title(note.title.clone().into());
+    ui.set_note_content(note.content.clone().into());
+    ui.set_note_dirty(false);
+}
+
+fn clear_current_note(ui: &LauncherWindow) {
+    ui.set_selected_note_id("".into());
+    ui.set_note_title("".into());
+    ui.set_note_content("".into());
+    ui.set_note_dirty(false);
+}
+
+fn show_toast(ui: &LauncherWindow, message: impl Into<SharedString>) {
+    ui.set_toast_message(message.into());
+}
+
+fn switch_status(value: Option<bool>) -> &'static str {
+    match value {
+        Some(true) => "On",
+        Some(false) => "Off",
+        None => "Unavailable",
+    }
+}
+
+fn apply_quick_settings(ui: &LauncherWindow, settings: &QuickSettingsSnapshot) {
+    ui.set_wifi_enabled(settings.wifi_enabled.unwrap_or(false));
+    ui.set_wifi_status(switch_status(settings.wifi_enabled).into());
+    ui.set_bluetooth_enabled(settings.bluetooth_enabled.unwrap_or(false));
+    ui.set_bluetooth_status(switch_status(settings.bluetooth_enabled).into());
+    ui.set_idle_inhibited(settings.idle_inhibited);
+    ui.set_sleep_inhibited(settings.sleep_inhibited);
+    ui.set_power_profile(settings.power_profile.as_ui_value().into());
+}
+
+fn handle_quick_settings_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::ActionResult {
+            message,
+            quick_settings,
+            ..
+        }) => {
+            if let Some(settings) = quick_settings {
+                apply_quick_settings(ui, &settings);
+            }
+            show_toast(ui, message);
+        }
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
+        | Ok(ServerMessage::Init { .. }) => {
+            show_toast(ui, "Daemon returned an unexpected response");
+        }
+        Err(error) => show_toast(ui, format!("Quick Settings failed: {error}")),
+    }
+}
+
+fn handle_folder_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::ActionResult {
+            message,
+            folder_pins: Some(folder_pins),
+            ..
+        }) => {
+            render_folders(ui, &folder_pins);
+            ui.set_folder_form_visible(false);
+            ui.set_folder_name("".into());
+            ui.set_folder_path("".into());
+            render_folder_suggestions(ui, Vec::new());
+            show_toast(ui, message);
+        }
+        Ok(ServerMessage::ActionResult { message, .. }) | Ok(ServerMessage::Error { message }) => {
+            show_toast(ui, message)
+        }
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::NoteLoaded { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
+        | Ok(ServerMessage::Init { .. }) => {
+            show_toast(ui, "Daemon returned an unexpected response");
+        }
+        Err(error) => show_toast(ui, format!("Folders failed: {error}")),
+    }
+}
+
+fn handle_note_response(
+    ui: &LauncherWindow,
+    response: Result<ServerMessage, String>,
+    show_success_message: bool,
+) {
+    match response {
+        Ok(ServerMessage::ActionResult {
+            success,
+            message,
+            notes,
+            note,
+            ..
+        }) => {
+            if let Some(notes) = notes {
+                render_notes(ui, &notes);
+            }
+            if let Some(note) = note {
+                set_current_note(ui, &note);
+            }
+            if show_success_message || !success {
+                show_toast(ui, message);
+            }
+        }
+        Ok(ServerMessage::NoteLoaded { note }) => set_current_note(ui, &note),
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(ServerMessage::FolderPathSuggestions { .. })
+        | Ok(ServerMessage::FileSearchResults { .. })
+        | Ok(ServerMessage::Init { .. }) => {
+            show_toast(ui, "Daemon returned an unexpected response");
+        }
+        Err(error) => show_toast(ui, format!("Notes failed: {error}")),
+    }
+}
+
+fn handle_file_search_response(ui: &LauncherWindow, response: Result<ServerMessage, String>) {
+    match response {
+        Ok(ServerMessage::FileSearchResults {
+            results,
+            indexing,
+            indexed_count,
+        }) => render_file_results(ui, results, indexing, indexed_count),
+        Ok(ServerMessage::Error { message }) => show_toast(ui, message),
+        Ok(_) => show_toast(ui, "Daemon returned an unexpected response"),
+        Err(error) => show_toast(ui, format!("File search failed: {error}")),
+    }
+}
+
+fn render_calendar(ui: &LauncherWindow, month: NaiveDate) {
+    let today = Local::now().date_naive();
+    let days: Vec<CalendarDay> = month_grid(month, today)
+        .into_iter()
+        .map(|cell| CalendarDay {
+            label: cell.day.to_string().into(),
+            in_current_month: cell.in_current_month,
+            is_today: cell.is_today,
+        })
+        .collect();
+    ui.set_calendar_month(month.format("%B %Y").to_string().into());
+    ui.set_calendar_days(ModelRc::from(Rc::new(VecModel::from(days))));
+}
+
+fn refresh_clock(ui: &LauncherWindow) {
+    let (clock, date) = local_clock_text();
+    ui.set_clock_text(clock.into());
+    ui.set_clock_date(date.into());
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = socket_path()?;
+    let stream = connect_or_start_daemon(&socket_path)?;
 
     let ui = LauncherWindow::new()?;
     let matcher = Arc::new(SkimMatcherV2::default());
+    let calendar_month = Rc::new(RefCell::new(month_start(Local::now().date_naive())));
+    refresh_clock(&ui);
+    render_calendar(&ui, *calendar_month.borrow());
 
-    let stream = UnixStream::connect(&sock_path)
-        .unwrap_or_else(|_| panic!("[Client] Could not connect to daemon at {}", sock_path));
+    let ui_clock = ui.as_weak();
+    let clock_timer = Timer::default();
+    clock_timer.start(TimerMode::Repeated, Duration::from_secs(1), move || {
+        if let Some(ui) = ui_clock.upgrade() {
+            refresh_clock(&ui);
+        }
+    });
 
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut init_line = String::new();
     reader.read_line(&mut init_line)?;
+    let initial_message: ServerMessage = serde_json::from_str(&init_line)?;
+    let (apps, pinned_app_ids, folder_pins, notes, quick_settings) = match initial_message {
+        ServerMessage::Init {
+            apps,
+            pinned_app_ids,
+            folder_pins,
+            notes,
+            quick_settings,
+        } => (apps, pinned_app_ids, folder_pins, notes, quick_settings),
+        ServerMessage::Error { message } => {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, message).into());
+        }
+        ServerMessage::ActionResult { .. }
+        | ServerMessage::FolderPathSuggestions { .. }
+        | ServerMessage::NoteLoaded { .. }
+        | ServerMessage::FileSearchResults { .. } => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "daemon sent a non-initialization message before initialization",
+            )
+            .into());
+        }
+    };
 
-    let payload: InitPayload = serde_json::from_str(&init_line)?;
     let mut app_items = Vec::new();
-    for app in payload.apps {
+    for app in apps {
         let mut has_icon = false;
-        let mut img = Image::default();
+        let mut image = Image::default();
         if let Some(icon_path) = app.icon {
             if let Ok(loaded) = Image::load_from_path(Path::new(&icon_path)) {
-                img = loaded;
+                image = loaded;
                 has_icon = true;
             }
         }
         app_items.push(AppItem {
+            app_id: app.id.into(),
             text: app.name.into(),
             has_native_icon: has_icon,
-            native_icon: img,
+            native_icon: image,
             text_icon: "\u{f00e}".into(),
         });
     }
 
-    let apps_rc = Rc::new(app_items);
-    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps_rc).clone()))));
-    ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps_rc.len())));
+    let apps = Rc::new(app_items);
+    ui.set_display_items(ModelRc::from(Rc::new(VecModel::from((*apps).clone()))));
+    ui.set_ribbon_text(SharedString::from(format!("{} Apps", apps.len())));
+    apply_quick_settings(&ui, &quick_settings);
+    render_folders(&ui, &folder_pins);
+    render_notes(&ui, &notes);
 
-    let (tx, rx) = mpsc::channel::<String>();
-    let tx_exec = tx.clone();
-    let mut write_stream = stream.try_clone()?;
+    let pin_slots: PinSlots = Rc::new(RefCell::new(resolve_pin_slots(&pinned_app_ids, &apps)));
+    render_pins(&ui, &pin_slots.borrow());
 
-    thread::spawn(move || {
-        while let Ok(msg) = rx.recv() {
-            let _ = write_stream.write_all(format!("{}\n", msg).as_bytes());
-        }
-    });
+    // A synchronous local socket write is tiny and prevents the launcher from
+    // exiting before a background writer has delivered its request.
+    let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    let reader = Arc::new(Mutex::new(reader));
 
     // ---- Calculator mode state ----
-    let calc_active = Arc::new(AtomicBool::new(false));
-    let calc_active_search = calc_active.clone();
-    let calc_active_exec = calc_active.clone();
+    let calculator_active = Arc::new(AtomicBool::new(false));
+    let calculator_active_search = Arc::clone(&calculator_active);
+    let calculator_active_execute = Arc::clone(&calculator_active);
 
     let ui_handle_search = ui.as_weak();
     let matcher_search = Arc::clone(&matcher);
-    let apps_search = Rc::clone(&apps_rc);
+    let apps_search = Rc::clone(&apps);
 
     ui.on_text_changed(move |query| {
         let ui = ui_handle_search.unwrap();
-        let query_str = query.as_str();
-        let trimmed = query_str.trim();
+        let query = query.as_str();
+        let trimmed = query.trim();
 
         // ---- CALCULATOR MODE (when search starts with =) ----
-        if trimmed.starts_with('=') {
-            calc_active_search.store(true, Ordering::Relaxed);
+        if let Some(expression) = trimmed.strip_prefix('=') {
+            calculator_active_search.store(true, Ordering::Relaxed);
             ui.set_calc_mode(true);
-            let expr = trimmed[1..].trim();
+            let expression = expression.trim();
 
-            if expr.is_empty() {
+            if expression.is_empty() {
                 ui.set_calc_expression("".into());
                 ui.set_calc_result("...".into());
                 ui.set_calc_error(false);
@@ -153,29 +484,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return;
             }
 
-            let result = meval::eval_str(expr);
-            match result {
-                Ok(val) => {
-                    let (display, raw) = if val.fract() == 0.0 && val.is_finite() {
-                        (format!("{}", val as i64), format!("{}", val as i64))
-                    } else if val.is_finite() {
-                        let formatted = format!("{:.6}", val)
+            match meval::eval_str(expression) {
+                Ok(value) => {
+                    let (display, raw) = if value.fract() == 0.0 && value.is_finite() {
+                        (format!("{}", value as i64), format!("{}", value as i64))
+                    } else if value.is_finite() {
+                        let formatted = format!("{value:.6}")
                             .trim_end_matches('0')
                             .trim_end_matches('.')
                             .to_string();
-                        (formatted.clone(), format!("{}", val))
-                    } else if val.is_infinite() {
+                        (formatted.clone(), value.to_string())
+                    } else if value.is_infinite() {
                         ("Infinity".to_string(), String::new())
                     } else {
                         ("undefined".to_string(), String::new())
                     };
-                    ui.set_calc_expression(expr.into());
+                    ui.set_calc_expression(expression.into());
                     ui.set_calc_result(display.into());
                     ui.set_calc_error(false);
                     ui.set_calc_raw_result(raw.into());
                 }
-                Err(_e) => {
-                    ui.set_calc_expression(expr.into());
+                Err(_) => {
+                    ui.set_calc_expression(expression.into());
                     ui.set_calc_result("...".into());
                     ui.set_calc_error(false);
                     ui.set_calc_raw_result("".into());
@@ -185,7 +515,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // ---- NORMAL FUZZY SEARCH ----
-        calc_active_search.store(false, Ordering::Relaxed);
+        calculator_active_search.store(false, Ordering::Relaxed);
         ui.set_calc_mode(false);
 
         if trimmed.is_empty() {
@@ -202,32 +532,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     scored_apps.push((score, app.clone()));
                 }
             }
-            scored_apps.sort_by(|a, b| b.0.cmp(&a.0));
+            scored_apps.sort_by_key(|item| std::cmp::Reverse(item.0));
             let total_count = scored_apps.len();
-            let final_list: Vec<AppItem> =
-                scored_apps.into_iter().take(100).map(|(_, v)| v).collect();
+            let matches: Vec<AppItem> = scored_apps
+                .into_iter()
+                .take(100)
+                .map(|(_, app)| app)
+                .collect();
 
-            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(final_list))));
+            ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(matches))));
             ui.set_absolute_index(0);
             ui.invoke_adjust_scroll();
-            let lbl = if total_count == 1 {
+            let label = if total_count == 1 {
                 "1 Match".to_string()
             } else {
-                format!("{} Matches", total_count)
+                format!("{total_count} Matches")
             };
-            ui.set_ribbon_text(SharedString::from(lbl));
+            ui.set_ribbon_text(SharedString::from(label));
         }
     });
 
-    // Clone BEFORE tx_exec gets moved into the execute_selected closure
-    let tx_power = tx_exec.clone();
-
-    let ui_exec = ui.as_weak();
+    let writer_execute = Arc::clone(&writer);
+    let ui_execute = ui.as_weak();
     ui.on_execute_selected(move |selected, _is_shift| {
-        let ui = ui_exec.unwrap();
+        let ui = ui_execute.unwrap();
 
-        // Calculator mode: copy result to clipboard
-        if calc_active_exec.load(Ordering::Relaxed) {
+        // Calculator mode: copy result to clipboard.
+        if calculator_active_execute.load(Ordering::Relaxed) {
             let raw = ui.get_calc_raw_result();
             if !raw.is_empty() {
                 copy_to_clipboard(raw.as_str());
@@ -235,25 +566,416 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(0);
         }
 
-        // Normal mode: execute app
-        let _ = tx_exec.send(format!("EXEC_APP:{}", selected.as_str()));
+        send_request(
+            &writer_execute,
+            &ClientMessage::LaunchApp {
+                app_id: selected.to_string(),
+            },
+        );
         std::process::exit(0);
     });
 
-    // Clear search button handler
+    let writer_pin = Arc::clone(&writer);
+    let reader_pin = Arc::clone(&reader);
+    let apps_pin = Rc::clone(&apps);
+    let pin_slots_assign = Rc::clone(&pin_slots);
+    let ui_pin = ui.as_weak();
+    ui.on_pin_app_requested(move |app_id, slot| {
+        let ui = ui_pin.unwrap();
+        let slot = match usize::try_from(slot) {
+            Ok(slot) if slot < PIN_SLOT_COUNT => slot,
+            _ => {
+                show_toast(&ui, "Invalid pin slot");
+                return;
+            }
+        };
+        let Some(app) = apps_pin
+            .iter()
+            .find(|app| app.app_id.as_str() == app_id.as_str())
+            .cloned()
+        else {
+            show_toast(&ui, "That application is no longer available");
+            return;
+        };
+
+        let response = request_response(
+            &writer_pin,
+            &reader_pin,
+            &ClientMessage::SetAppPin {
+                slot: slot as u8,
+                app_id: app_id.to_string(),
+            },
+        );
+        match response {
+            Ok(ServerMessage::ActionResult { success: true, .. }) => {
+                pin_slots_assign.borrow_mut()[slot] = Some(app.clone());
+                render_pins(&ui, &pin_slots_assign.borrow());
+                show_toast(&ui, format!("Pinned {} to Alt+{}", app.text, slot + 1));
+            }
+            Ok(ServerMessage::ActionResult {
+                success: false,
+                message,
+                ..
+            })
+            | Ok(ServerMessage::Error { message }) => show_toast(&ui, message),
+            Ok(ServerMessage::FolderPathSuggestions { .. })
+            | Ok(ServerMessage::NoteLoaded { .. })
+            | Ok(ServerMessage::FileSearchResults { .. })
+            | Ok(ServerMessage::Init { .. }) => {
+                show_toast(&ui, "Daemon returned an unexpected response");
+            }
+            Err(error) => show_toast(&ui, format!("Could not pin app: {error}")),
+        }
+    });
+
+    let writer_launch_pin = Arc::clone(&writer);
+    let pin_slots_launch = Rc::clone(&pin_slots);
+    let ui_launch_pin = ui.as_weak();
+    ui.on_launch_pinned_app(move |slot| {
+        let ui = ui_launch_pin.unwrap();
+        let slot = match usize::try_from(slot) {
+            Ok(slot) if slot < PIN_SLOT_COUNT => slot,
+            _ => return,
+        };
+        let app = pin_slots_launch
+            .borrow()
+            .get(slot)
+            .and_then(Option::as_ref)
+            .cloned();
+        let Some(app) = app else {
+            show_toast(&ui, format!("Alt+{} is empty", slot + 1));
+            return;
+        };
+
+        send_request(
+            &writer_launch_pin,
+            &ClientMessage::LaunchApp {
+                app_id: app.app_id.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_file_search = Arc::clone(&writer);
+    let reader_file_search = Arc::clone(&reader);
+    let ui_file_search = ui.as_weak();
+    ui.on_file_search_changed(move |query| {
+        let ui = ui_file_search.unwrap();
+        let response = request_response(
+            &writer_file_search,
+            &reader_file_search,
+            &ClientMessage::SearchFiles {
+                query: query.to_string(),
+            },
+        );
+        handle_file_search_response(&ui, response);
+    });
+
+    let writer_open_file = Arc::clone(&writer);
+    ui.on_open_file(move |path| {
+        send_request(
+            &writer_open_file,
+            &ClientMessage::OpenFile {
+                path: path.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_open_file_yazi = Arc::clone(&writer);
+    ui.on_open_file_in_yazi(move |path| {
+        send_request(
+            &writer_open_file_yazi,
+            &ClientMessage::OpenFileInYazi {
+                path: path.to_string(),
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_create_note = Arc::clone(&writer);
+    let reader_create_note = Arc::clone(&reader);
+    let ui_create_note = ui.as_weak();
+    ui.on_create_note(move || {
+        let ui = ui_create_note.unwrap();
+        let response = request_response(
+            &writer_create_note,
+            &reader_create_note,
+            &ClientMessage::CreateNote {
+                title: "Untitled".to_string(),
+            },
+        );
+        handle_note_response(&ui, response, true);
+    });
+
+    let writer_load_note = Arc::clone(&writer);
+    let reader_load_note = Arc::clone(&reader);
+    let ui_load_note = ui.as_weak();
+    ui.on_load_note(move |id| {
+        let ui = ui_load_note.unwrap();
+        let response = request_response(
+            &writer_load_note,
+            &reader_load_note,
+            &ClientMessage::LoadNote { id: id.to_string() },
+        );
+        handle_note_response(&ui, response, false);
+    });
+
+    let writer_save_note = Arc::clone(&writer);
+    let reader_save_note = Arc::clone(&reader);
+    let ui_save_note = ui.as_weak();
+    ui.on_save_note(move |id, title, content| {
+        if id.is_empty() {
+            return;
+        }
+        let ui = ui_save_note.unwrap();
+        let response = request_response(
+            &writer_save_note,
+            &reader_save_note,
+            &ClientMessage::SaveNote {
+                id: id.to_string(),
+                title: title.to_string(),
+                content: content.to_string(),
+            },
+        );
+        handle_note_response(&ui, response, false);
+    });
+
+    let writer_delete_note = Arc::clone(&writer);
+    let reader_delete_note = Arc::clone(&reader);
+    let ui_delete_note = ui.as_weak();
+    ui.on_delete_note(move |id| {
+        let ui = ui_delete_note.unwrap();
+        let was_selected = ui.get_selected_note_id().as_str() == id.as_str();
+        let response = request_response(
+            &writer_delete_note,
+            &reader_delete_note,
+            &ClientMessage::DeleteNote { id: id.to_string() },
+        );
+        let deleted = matches!(
+            &response,
+            Ok(ServerMessage::ActionResult { success: true, .. })
+        );
+        handle_note_response(&ui, response, true);
+        if deleted && was_selected {
+            clear_current_note(&ui);
+        }
+    });
+
+    let calendar_month_previous = Rc::clone(&calendar_month);
+    let ui_calendar_previous = ui.as_weak();
+    ui.on_calendar_previous_month(move || {
+        let ui = ui_calendar_previous.unwrap();
+        let mut month = calendar_month_previous.borrow_mut();
+        *month = shift_month(*month, -1);
+        render_calendar(&ui, *month);
+    });
+
+    let calendar_month_next = Rc::clone(&calendar_month);
+    let ui_calendar_next = ui.as_weak();
+    ui.on_calendar_next_month(move || {
+        let ui = ui_calendar_next.unwrap();
+        let mut month = calendar_month_next.borrow_mut();
+        *month = shift_month(*month, 1);
+        render_calendar(&ui, *month);
+    });
+
+    let calendar_month_today = Rc::clone(&calendar_month);
+    let ui_calendar_today = ui.as_weak();
+    ui.on_calendar_today(move || {
+        let ui = ui_calendar_today.unwrap();
+        let mut month = calendar_month_today.borrow_mut();
+        *month = month_start(Local::now().date_naive());
+        render_calendar(&ui, *month);
+    });
+
+    let writer_wifi = Arc::clone(&writer);
+    let reader_wifi = Arc::clone(&reader);
+    let ui_wifi = ui.as_weak();
+    ui.on_toggle_wifi(move || {
+        let ui = ui_wifi.unwrap();
+        let response = request_response(
+            &writer_wifi,
+            &reader_wifi,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleWifi,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_bluetooth = Arc::clone(&writer);
+    let reader_bluetooth = Arc::clone(&reader);
+    let ui_bluetooth = ui.as_weak();
+    ui.on_toggle_bluetooth(move || {
+        let ui = ui_bluetooth.unwrap();
+        let response = request_response(
+            &writer_bluetooth,
+            &reader_bluetooth,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleBluetooth,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_idle = Arc::clone(&writer);
+    let reader_idle = Arc::clone(&reader);
+    let ui_idle = ui.as_weak();
+    ui.on_toggle_idle_inhibit(move || {
+        let ui = ui_idle.unwrap();
+        let response = request_response(
+            &writer_idle,
+            &reader_idle,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleIdleInhibit,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_sleep = Arc::clone(&writer);
+    let reader_sleep = Arc::clone(&reader);
+    let ui_sleep = ui.as_weak();
+    ui.on_toggle_sleep_inhibit(move || {
+        let ui = ui_sleep.unwrap();
+        let response = request_response(
+            &writer_sleep,
+            &reader_sleep,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::ToggleSleepInhibit,
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_profile = Arc::clone(&writer);
+    let reader_profile = Arc::clone(&reader);
+    let ui_profile = ui.as_weak();
+    ui.on_set_power_profile(move |profile| {
+        let ui = ui_profile.unwrap();
+        let Some(profile) = PowerProfile::parse(profile.as_str()) else {
+            show_toast(&ui, "Unknown power profile");
+            return;
+        };
+        let response = request_response(
+            &writer_profile,
+            &reader_profile,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::SetPowerProfile { profile },
+            },
+        );
+        handle_quick_settings_response(&ui, response);
+    });
+
+    let writer_impala = Arc::clone(&writer);
+    ui.on_open_wifi_manager(move || {
+        send_request(
+            &writer_impala,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::OpenWifiManager,
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_bluetui = Arc::clone(&writer);
+    ui.on_open_bluetooth_manager(move || {
+        send_request(
+            &writer_bluetui,
+            &ClientMessage::QuickSettings {
+                action: QuickSettingsAction::OpenBluetoothManager,
+            },
+        );
+        std::process::exit(0);
+    });
+
+    let writer_folder_suggestions = Arc::clone(&writer);
+    let reader_folder_suggestions = Arc::clone(&reader);
+    let ui_folder_suggestions = ui.as_weak();
+    ui.on_folder_path_changed(move |path| {
+        let ui = ui_folder_suggestions.unwrap();
+        let response = request_response(
+            &writer_folder_suggestions,
+            &reader_folder_suggestions,
+            &ClientMessage::FolderPathSuggestions {
+                path: path.to_string(),
+            },
+        );
+        match response {
+            Ok(ServerMessage::FolderPathSuggestions { suggestions }) => {
+                render_folder_suggestions(&ui, suggestions);
+            }
+            Ok(ServerMessage::Error { .. }) | Err(_) => {
+                // A partial path often has no readable parent yet; simply hide
+                // completion until the user reaches one.
+                render_folder_suggestions(&ui, Vec::new());
+            }
+            Ok(_) => show_toast(&ui, "Daemon returned an unexpected response"),
+        }
+    });
+
+    let ui_folder_suggestion = ui.as_weak();
+    ui.on_folder_suggestion_selected(move |path| {
+        let ui = ui_folder_suggestion.unwrap();
+        ui.set_folder_path(path);
+        render_folder_suggestions(&ui, Vec::new());
+    });
+
+    let writer_add_folder = Arc::clone(&writer);
+    let reader_add_folder = Arc::clone(&reader);
+    let ui_add_folder = ui.as_weak();
+    ui.on_add_folder(move |label, path| {
+        let ui = ui_add_folder.unwrap();
+        if label.as_str().trim().is_empty() || path.as_str().trim().is_empty() {
+            show_toast(&ui, "Enter both a name and a path");
+            return;
+        }
+        let response = request_response(
+            &writer_add_folder,
+            &reader_add_folder,
+            &ClientMessage::CreateFolderPin {
+                label: label.to_string(),
+                path: path.to_string(),
+            },
+        );
+        handle_folder_response(&ui, response);
+    });
+
+    let writer_delete_folder = Arc::clone(&writer);
+    let reader_delete_folder = Arc::clone(&reader);
+    let ui_delete_folder = ui.as_weak();
+    ui.on_delete_folder(move |id| {
+        let ui = ui_delete_folder.unwrap();
+        let response = request_response(
+            &writer_delete_folder,
+            &reader_delete_folder,
+            &ClientMessage::DeleteFolderPin { id: id.to_string() },
+        );
+        handle_folder_response(&ui, response);
+    });
+
+    let writer_open_folder = Arc::clone(&writer);
+    ui.on_open_folder(move |id| {
+        send_request(
+            &writer_open_folder,
+            &ClientMessage::OpenFolder { id: id.to_string() },
+        );
+        std::process::exit(0);
+    });
+
+    // Clear search button handler.
     let ui_clear = ui.as_weak();
-    let apps_clear = Rc::clone(&apps_rc);
+    let apps_clear = Rc::clone(&apps);
     ui.on_clear_search(move || {
         let ui = ui_clear.unwrap();
         if ui.get_calc_mode() {
-            // In calc mode: clear the expression but stay in calc mode
             ui.set_search_text("=".into());
             ui.set_calc_expression("".into());
             ui.set_calc_result("...".into());
             ui.set_calc_error(false);
             ui.set_calc_raw_result("".into());
         } else {
-            // Normal mode: clear search and reset app list
             ui.set_search_text("".into());
             ui.set_display_items(ModelRc::from(Rc::new(VecModel::from(
                 (*apps_clear).clone(),
@@ -264,51 +986,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     });
 
-    let ui_handle_high = ui.as_weak();
-    ui.on_item_highlighted(move |_idx, total, _name| {
-        let ui = ui_handle_high.unwrap();
-        let lbl = if total == 1 {
+    let ui_handle_highlight = ui.as_weak();
+    ui.on_item_highlighted(move |_index, total, _name| {
+        let ui = ui_handle_highlight.unwrap();
+        let label = if total == 1 {
             "1 App".to_string()
         } else {
-            format!("{} Apps", total)
+            format!("{total} Apps")
         };
-        ui.set_ribbon_text(SharedString::from(lbl));
+        ui.set_ribbon_text(SharedString::from(label));
     });
 
-    ui.on_sidebar_action(move |index| {
-        match index {
-            1 => {
-                let _ = std::process::Command::new("zen-browser").spawn();
-            }
-            2 => {
-                let _ = std::process::Command::new("sh")
-                    .args(["-c", "mpv --player-operation-mode=pseudo-gui"])
-                    .spawn();
-            }
-            3 => {
-                let _ = std::process::Command::new("footclient")
-                    .current_dir(&env::var("HOME").unwrap_or_default())
-                    .args(["-e", "yazi"])
-                    .spawn();
-            }
-            4 => {
-                let _ = std::process::Command::new("footclient")
-                    .args(["-e", "btop"])
-                    .spawn();
-            }
-            5 => {
-                let _ = std::process::Command::new("footclient")
-                    .args(["-e", "nvim"])
-                    .spawn();
-            }
-            _ => {}
-        }
-        std::process::exit(0);
-    });
-
-    let tx_power2 = tx_power.clone();
+    let writer_power = Arc::clone(&writer);
     ui.on_power_action(move |action| {
-        let _ = tx_power2.send(format!("POWER_ACTION:{}", action.as_str()));
+        let Some(action) = PowerAction::parse(action.as_str()) else {
+            eprintln!("[Client] Ignoring unknown power action: {action}");
+            return;
+        };
+        send_request(&writer_power, &ClientMessage::PowerAction { action });
         std::process::exit(0);
     });
 
@@ -317,5 +1012,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     ui.run()?;
+    clock_timer.stop();
     Ok(())
 }

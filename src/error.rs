@@ -13,13 +13,13 @@ pub enum LauncherError {
 }
 
 impl fmt::Display for LauncherError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LauncherError::Io(e) => write!(f, "I/O error: {}", e),
-            LauncherError::Json(e) => write!(f, "JSON error: {}", e),
-            LauncherError::Zbus(e) => write!(f, "D-Bus error: {}", e),
-            LauncherError::Slint(e) => write!(f, "UI error: {}", e),
-            LauncherError::Other(s) => write!(f, "{}", s),
+            Self::Io(error) => write!(formatter, "I/O error: {error}"),
+            Self::Json(error) => write!(formatter, "JSON error: {error}"),
+            Self::Zbus(error) => write!(formatter, "D-Bus error: {error}"),
+            Self::Slint(error) => write!(formatter, "UI error: {error}"),
+            Self::Other(message) => write!(formatter, "{message}"),
         }
     }
 }
@@ -27,29 +27,37 @@ impl fmt::Display for LauncherError {
 impl std::error::Error for LauncherError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            LauncherError::Io(e) => Some(e),
-            LauncherError::Json(e) => Some(e),
-            LauncherError::Zbus(e) => Some(e),
-            LauncherError::Slint(e) => Some(e),
-            LauncherError::Other(_) => None,
+            Self::Io(error) => Some(error),
+            Self::Json(error) => Some(error),
+            Self::Zbus(error) => Some(error),
+            Self::Slint(error) => Some(error),
+            Self::Other(_) => None,
         }
     }
 }
 
 impl From<std::io::Error> for LauncherError {
-    fn from(e: std::io::Error) -> Self { LauncherError::Io(e) }
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 impl From<serde_json::Error> for LauncherError {
-    fn from(e: serde_json::Error) -> Self { LauncherError::Json(e) }
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error)
+    }
 }
 
 impl From<zbus::Error> for LauncherError {
-    fn from(e: zbus::Error) -> Self { LauncherError::Zbus(e) }
+    fn from(error: zbus::Error) -> Self {
+        Self::Zbus(error)
+    }
 }
 
 impl From<slint::PlatformError> for LauncherError {
-    fn from(e: slint::PlatformError) -> Self { LauncherError::Slint(e) }
+    fn from(error: slint::PlatformError) -> Self {
+        Self::Slint(error)
+    }
 }
 
 /// Shorthand for `Result<T, LauncherError>`.
