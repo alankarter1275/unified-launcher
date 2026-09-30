@@ -90,9 +90,10 @@ impl VaultManager {
 
         let key = Self::derive_key(password, &salt);
         let cipher = Aes256Gcm::new(&key);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes.as_slice())
+            .map_err(|_| "Invalid nonce".to_string())?;
 
-        match cipher.decrypt(nonce, ciphertext.as_ref()) {
+        match cipher.decrypt(&nonce, ciphertext.as_ref()) {
             Ok(_) => {
                 self.master_key = Some(key);
                 self.salt = Some(
@@ -130,10 +131,10 @@ impl VaultManager {
             hex::decode(&vault.ciphertext).map_err(|_| "Invalid ciphertext format".to_string())?;
 
         let cipher = Aes256Gcm::new(key);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes.as_slice())
+            .map_err(|_| "Invalid nonce".to_string())?;
 
-        let decrypted = cipher
-            .decrypt(nonce, ciphertext.as_ref())
+        let decrypted = cipher.decrypt(&nonce, ciphertext.as_ref())
             .map_err(|_| "Failed to decrypt vault content".to_string())?;
 
         let data: VaultData = serde_json::from_slice(&decrypted)
@@ -191,10 +192,10 @@ impl VaultManager {
         let cipher = Aes256Gcm::new(key);
         let mut nonce_bytes = [0u8; 12];
         thread_rng().fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes.as_slice())
+            .map_err(|_| "Invalid nonce".to_string())?;
 
-        let ciphertext = cipher
-            .encrypt(nonce, json.as_ref())
+        let ciphertext = cipher.encrypt(&nonce, json.as_ref())
             .map_err(|_| "Could not encrypt vault data".to_string())?;
 
         let encrypted_vault = EncryptedVault {
@@ -217,6 +218,7 @@ impl VaultManager {
     fn derive_key(password: &str, salt: &[u8]) -> Key<Aes256Gcm> {
         let mut key = [0u8; 32];
         pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, 100_000, &mut key);
-        *Key::<Aes256Gcm>::from_slice(&key)
+        let key_array: [u8; 32] = key;
+        Key::<Aes256Gcm>::from(key_array)
     }
 }
